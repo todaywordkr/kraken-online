@@ -60,7 +60,7 @@ export function newGame(roster) {
     phase: 'shuffling', round: 1, actionInRound: 0, nextCardId: 1,
     players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [], claim: null })),
     currentId: roster[randomInt(count)].id,
-    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
+    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
   };
   deal(game, [
     ...Array(4 * count - 1).fill('empty'),
@@ -156,11 +156,21 @@ export function finishShuffle(game) {
   } else {
     game.log.push({kind:'round',message:'1라운드 시작 · 카드 섞기 완료!'});
   }
-  game.phase = 'declaring';
+  game.phase = 'reviewing';
   game.shuffleEndsAt = null;
-  game.claimEndsAt = null; // Server sets exact deadline for all clients.
+  game.reviewEndsAt = null; // Server starts the 5-second private inspection window.
+  game.claimEndsAt = null;
   game.players.forEach(p=>{p.claim = null;});
-  game.log.push({kind:'declare',message:`${game.round}라운드 보물 개수 선언 · 5초 안에 숫자를 골라 주세요.`});
+  game.log.push({kind:'review',message:`${game.round}라운드 카드 확인 · 각자 자신의 카드 구성을 5초 동안 확인합니다.`});
+}
+
+/** All players inspect their own five/four/three/two card faces for five seconds. */
+export function finishReview(game) {
+  if (game.phase !== 'reviewing') throw new Error('카드 확인 단계가 아닙니다.');
+  game.phase = 'declaring';
+  game.reviewEndsAt = null;
+  game.claimEndsAt = null; // Server starts the next five-second window.
+  game.log.push({kind:'declare',message:`${game.round}라운드 카드 확인 완료 → 5초 동안 보물 개수를 선언하세요.`});
 }
 
 /** Public maximum: never exceed the size of this player's hand or remaining global treasures. */
@@ -203,6 +213,7 @@ export function publicGame(game, viewerId = null) {
     round: game.round,
     shuffleEndsAt: game.phase === 'shuffling' ? game.shuffleEndsAt : null,
     shuffleFromRound: game.shuffleFromRound,
+    reviewEndsAt: game.phase === 'reviewing' ? game.reviewEndsAt : null,
     claimEndsAt: game.phase === 'declaring' ? game.claimEndsAt : null,
     roundEndAt: game.phase === 'round-end' ? game.roundEndAt : null,
     actionInRound: game.actionInRound,

@@ -53,7 +53,7 @@ function connectEvents() {
       const data = JSON.parse(ev.data);
       const was = state.room?.game;
       state.room = data;
-      if (was?.phase === 'shuffling' && data.game?.phase === 'declaring') {
+      if (was?.phase === 'shuffling' && data.game?.phase === 'reviewing') {
         state.justDealt = true;
         setTimeout(() => { state.justDealt = false; render(); }, 950);
       }
@@ -206,6 +206,44 @@ function shuffleOverlay(g) {
     </div>
   </div>`;
 }
+/** A private *composition* preview, never the real positions of the server-held cards. */
+function reviewCards(counts, playerId, round) {
+  const kinds = Object.entries(counts || {}).flatMap(([type,count])=>Array.from({length:count},()=>type));
+  let seed = [...String(playerId||'')].reduce((value,c)=>((value*33)^c.charCodeAt(0))>>>0, round*71+911);
+  for(let i=kinds.length-1;i>0;i--) {
+    seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+    const j=seed%(i+1);
+    [kinds[i],kinds[j]]=[kinds[j],kinds[i]];
+  }
+  return kinds;
+}
+function reviewPanel(g) {
+  const secret=g.mySecret;
+  if (!secret) return '';
+  const hand=reviewCards(secret.counts,me(),g.round);
+  const seconds=Math.max(0,Math.ceil(((g.reviewEndsAt||Date.now())-Date.now())/1000));
+  return `<div class="review-overlay" role="dialog" aria-modal="true" aria-label="내 카드 확인 시간">
+    <section class="review-modal">
+      <div class="claim-kicker">ROUND ${String(g.round).padStart(2,'0')} · PRIVATE CARD REVIEW</div>
+      <h2>${g.round}라운드 <em>내 카드 확인</em></h2>
+      <p>다른 사람에게 보이지 않는 <strong>나만의 카드 구성</strong>이에요.<br/>5초 동안 종류별 개수를 기억하세요.</p>
+      <div class="review-clock"><strong data-review-countdown>${seconds}</strong><small>초 남음</small></div>
+      <div class="review-cards" role="list" aria-label="자신에게 배분된 카드 종류">
+        ${hand.map((kind,i)=>`<div class="review-card ${kind}" role="listitem"><span>${icons[kind]}</span><strong>${{empty:'빈 상자',treasure:'보물',kraken:'크라켄'}[kind]}</strong></div>`).join('')}
+      </div>
+      <div class="review-summary">빈 상자 <b>${secret.counts.empty}</b> · 보물 <b>${secret.counts.treasure}</b> · 크라켄 <b>${secret.counts.kraken}</b></div>
+      <p class="review-warning">이 카드 배열은 종류 확인용이에요. 확인 후 카드는 다시 뒤집어 섞이므로, <b>실제 위치는 알 수 없습니다.</b></p>
+      <div class="review-next">5초 후 보물 개수 선언이 자동으로 시작됩니다.</div>
+    </section>
+  </div>`;
+}
+function declarationAudit(g) {
+  if (!['playing','round-end'].includes(g.phase) || !g.players.every(p=>Number.isInteger(p.treasureClaim))) return '';
+  const declared=g.players.reduce((sum,p)=>sum+p.treasureClaim,0);
+  const remainingAtStart=g.playerCount-g.revealed.filter(r=>r.type==='treasure' && r.round<g.round).length;
+  const delta=declared-remainingAtStart;
+  return `<div class="claim-audit ${delta ? 'mismatch' : 'matched'}" role="note"><span>◆ 이번 라운드 보물 선언 합 <strong>${declared}개</strong> · 실제 남아 있던 보물 <strong>${remainingAtStart}개</strong></span><small>${delta ? `⚠ ${Math.abs(delta)}개 ${delta>0?'초과':'부족'} — 누군가 거짓말을 하고 있어요. 누구인지는 알 수 없어요.` : '합계가 같아도 서로의 거짓말이 상쇄될 수 있어요.'}</small></div>`;
+}
 function declarationPanel(g) {
   const mine = g.players.find(p=>p.id === me());
   const selected = mine?.treasureClaim;
@@ -242,17 +280,18 @@ function gamePage() {
   const selectedOwner = g.players.find(p => p.id === pending?.targetId);
   return `${brand()}<main class="container state-page game-page ${state.justDealt ? 'dealt-in' : ''}"><div class="game-head"><div><span class="eyebrow">THE VOYAGE HAS BEGUN</span><h1>심해의 탐험</h1><p>보물을 찾아내되, 크라켄은 절대 깨우지 마세요.</p></div>
     <div class="round-track">${Array.from({length:4}, (_, i) => `<div class="round-step ${i + 1 === g.round ? 'current' : i + 1 < g.round ? 'done' : ''}"><b>${String(i+1).padStart(2,'0')}</b><small>ROUND</small></div>`).join('')}</div></div>
-    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>${g.phase === 'playing' ? '행동할 플레이어' : '현재 진행'}</small><strong>${g.phase === 'playing' ? `✳ ${safe(actor?.name)}` : g.phase === 'round-end' ? '◆ 공개 결과 확인' : g.phase === 'declaring' ? '◆ 보물 개수 선언' : '↻ 카드 섞는 중'}</strong><span>${g.phase === 'shuffling' ? '남은 카드 재분배 중' : g.phase === 'declaring' ? '보물 개수 선언 중 · 5초' : g.phase === 'round-end' ? '마지막 공개 카드 확인 중' : myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
+    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>${g.phase === 'playing' ? '행동할 플레이어' : '현재 진행'}</small><strong>${g.phase === 'playing' ? `✳ ${safe(actor?.name)}` : g.phase === 'round-end' ? '◆ 공개 결과 확인' : g.phase === 'reviewing' ? '◇ 나의 카드 확인' : g.phase === 'declaring' ? '◆ 보물 개수 선언' : '↻ 카드 섞는 중'}</strong><span>${g.phase === 'shuffling' ? '남은 카드 재분배 중' : g.phase === 'reviewing' ? '비밀 카드 구성 확인 · 5초' : g.phase === 'declaring' ? '보물 개수 선언 중 · 5초' : g.phase === 'round-end' ? '마지막 공개 카드 확인 중' : myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
     <div class="game-layout"><aside class="left-sidebar">${secretPanel(g)}<section class="panel history-panel"><div class="panel-heading"><div><span class="top-glyph">≋</span><strong>탐험 기록</strong></div></div><div class="history-rows">${g.log.slice().reverse().map((entry,i) => `<div class="history-item ${entry.kind === 'round' ? 'round-event' : ''}"><span>${entry.kind === 'treasure' ? '◆' : entry.kind === 'kraken' ? '✺' : entry.kind === 'round' ? '↻' : '◇'}</span><p>${safe(entry.message)}</p></div>`).join('')}</div></section></aside>
-    <section class="table-area"><div class="table-heading"><div><span class="eyebrow">THE CARD TABLE</span><h2>탐험 카드</h2></div><span>뒷면을 눌러 선택</span></div>
+    <section class="table-area">${declarationAudit(g)}<div class="table-heading"><div><span class="eyebrow">THE CARD TABLE</span><h2>탐험 카드</h2></div><span>뒷면을 눌러 선택</span></div>
       <div class="hands-grid">${g.players.map((p,i)=>playerHand(p,i,g)).join('')}</div>
-      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${g.phase === 'shuffling' ? '✦ 카드를 섞고 있습니다' : g.phase === 'declaring' ? '✦ 보물 개수 선언 중입니다' : g.phase === 'round-end' ? '✦ 마지막 공개 카드를 확인하세요' : myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
+      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${g.phase === 'shuffling' ? '✦ 카드를 섞고 있습니다' : g.phase === 'reviewing' ? '✦ 자신의 카드를 5초 동안 확인하세요' : g.phase === 'declaring' ? '✦ 보물 개수 선언 중입니다' : g.phase === 'round-end' ? '✦ 마지막 공개 카드를 확인하세요' : myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
       <section class="panel reveal-panel"><div class="panel-heading"><div><span class="top-glyph">◆</span><strong>공개된 카드</strong></div><span>${g.revealed.length}장 발견</span></div>
         ${revealSpotlight(g)}${revealHistory(g)}
       </section>
     </section><aside class="right-sidebar">${chatPanel()}<div class="sidebar-hint"><span>✧</span> 기억하세요. 자신의 손패에 보물이 있다는 말조차 거짓말일 수 있습니다.</div></aside></div>
     <footer class="site-footer">NO ONE KNOWS WHERE THE KRAKEN SLEEPS <span>${state.connection}</span></footer>
     ${g.phase === 'shuffling' ? shuffleOverlay(g) : ''}
+    ${g.phase === 'reviewing' ? reviewPanel(g) : ''}
     ${g.phase === 'declaring' ? declarationPanel(g) : ''}
   </main>`;
 }
@@ -274,10 +313,10 @@ function rulesModal() {
       <div class="section-kicker">THE CAPTAIN'S LOG</div><h2>심해의 항해 규칙</h2><div class="rules-scroll">
       <h3>01. 비밀 역할 및 AI</h3><p>4~8명에게 탐험대와 스켈레톤 역할이 무작위로 배정됩니다. 역할 카드는 실제 인원보다 한 장 많을 수 있으며, 누구도 자기 팀의 정확한 인원수를 모를 수 있습니다.</p>
       <p>AI도 플레이어 한 명으로 계산되며, 방장은 출항 전에 쉬움/보통/어려움 난이도의 AI를 추가하거나 제거할 수 있습니다. AI는 카드의 위치를 미리 알지 못하고 자신의 카드 개수와 공개 기록, 채팅 내용을 이용해 결정합니다.</p><h3>02. 처음 받은 카드</h3><p>각자 5장의 탐험 카드를 받습니다. 카드의 종류별 개수는 알지만, 섞어 뒤집어 놓으므로 어떤 위치에 무엇이 있는지는 모릅니다. 전체 보물 수는 플레이어 수와 같고, 크라켄은 1장입니다.</p>
-      <h3>03. 보물 선언 (추가된 웹게임 규칙)</h3><p>매 라운드 카드를 섞은 뒤 5초 동안 0개부터 이번 라운드에 가능한 최대 수까지 보물 개수를 선언합니다. 거짓말도 가능하며, 아무것도 누르지 않은 사람은 실제 보물 수로 자동 선언됩니다. 모든 선언은 이름 옆에 표시됩니다.</p><h3>04. 행동과 토론</h3><p>차례인 플레이어는 <b>다른 플레이어</b>의 카드를 하나 선택합니다. 모두와 토론하고 결정을 바꾼 뒤 최종 공개할 수 있습니다. 공개한 카드의 주인이 다음 행동자가 됩니다.</p>
-      <h3>05. 총 네 라운드</h3><p>매 라운드 플레이어 수만큼 카드를 공개합니다. 공개한 카드는 제외하고 나머지를 전부 모아 다시 섞어 나눕니다. 라운드별 손패는 5장 → 4장 → 3장 → 2장입니다.</p>
+      <h3>03. 카드 확인 5초 + 보물 선언 5초 (웹게임 추가 규칙)</h3><p>매 라운드 남은 카드 전체를 재분배한 뒤 자신의 카드 종류를 5초 동안 확인합니다. 이어서 5초 동안 0개부터 이번 라운드에 가능한 최대 수까지 보물 개수를 선언합니다. 거짓말도 가능하며, 아무것도 누르지 않은 사람은 실제 보물 수로 자동 선언됩니다. 모든 선언은 이름 옆에 표시됩니다.</p><h3>04. 행동과 토론</h3><p>차례인 플레이어는 <b>다른 플레이어</b>의 카드를 하나 선택합니다. 모두와 토론하고 결정을 바꾼 뒤 최종 공개할 수 있습니다. 공개한 카드의 주인이 다음 행동자가 됩니다.</p>
+      <h3>05. 총 네 라운드</h3><p>매 라운드 플레이어 수만큼 카드를 공개합니다. 공개한 카드는 제외하고 다른 플레이어의 카드까지 모두 모아 다시 섞어 나눕니다. 직전 라운드에 손패가 0장이었던 사람도 다시 카드를 받습니다. 라운드별 손패는 5장 → 4장 → 3장 → 2장입니다.</p>
       <h3>06. 승리 조건</h3><p>탐험대는 보물을 전부 찾으면 즉시 승리합니다. 스켈레톤은 크라켄이 공개되거나 4라운드를 버티면 승리합니다.</p>
-      <div class="rules-footnote">5초 보물 선언은 요청에 따라 추가한 웹게임 하우스룰입니다. 비공식 팬 제작 버전으로 기본 규칙만 지원합니다. 디럭스 확장/특수 카드와 3인 변형 규칙은 제외됩니다.</div></div><button class="primary-btn wide" data-action="rules">규칙 확인했어요 ↗</button>
+      <div class="rules-footnote">5초 카드 확인 및 5초 보물 선언은 요청에 따라 추가한 웹게임 하우스룰입니다. 비공식 팬 제작 버전으로 기본 규칙만 지원합니다. 디럭스 확장/특수 카드와 3인 변형 규칙은 제외됩니다.</div></div><button class="primary-btn wide" data-action="rules">규칙 확인했어요 ↗</button>
   </div></div>`;
 }
 function render() {
@@ -396,6 +435,9 @@ const clockInterval=setInterval(() => {
   const timer = document.querySelector('[data-claim-countdown]');
   const deadline = game()?.claimEndsAt;
   if (timer && deadline) timer.textContent = Math.max(0,Math.ceil((deadline-Date.now())/1000));
+  const review = document.querySelector('[data-review-countdown]');
+  const reviewDeadline = game()?.reviewEndsAt;
+  if (review && reviewDeadline) review.textContent = Math.max(0,Math.ceil((reviewDeadline-Date.now())/1000));
 },100);
 
 clockInterval.unref?.(); // Allows dependency-free Node template tests to exit.

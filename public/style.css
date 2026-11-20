@@ -117,3 +117,33 @@
 @media(max-width:670px){.claim-modal{padding:20px 16px}.claim-option{width:51px;height:58px;font-size:23px}.claim-roster{gap:5px}.claim-roster-person{padding:7px 6px;font-size:10px}.claim-roster-person strong{font-size:10px}.claim-chip{font-size:9px;margin-left:0}.reveal-spotlight strong{font-size:13px}}
 @media(max-height:690px){.claim-modal{padding:15px 20px}.claim-clock{width:64px;height:64px;margin:7px auto}.claim-clock span{font-size:27px}.claim-buttons{gap:6px}.claim-option{height:52px}}
 @media(prefers-reduced-motion:reduce){.claim-overlay{animation:none}}
+
+/* v1.5 — five-second private card inspection (no actual card positions exposed). */
+.review-overlay{position:fixed;inset:0;z-index:86;display:grid;place-items:center;padding:16px;background:rgba(3,15,23,.94);backdrop-filter:blur(9px);animation:round-fade-in .35s ease-out;overflow:auto}
+.review-modal{width:min(680px,100%);max-height:calc(100vh - 32px);overflow-y:auto;border:1px solid rgba(218,190,145,.29);border-radius:18px;background:radial-gradient(circle at 50% -10%,rgba(51,102,103,.3),transparent 60%),#0d2731;padding:28px 24px;text-align:center;box-shadow:0 25px 70px rgba(0,0,0,.35)}
+.review-modal h2{font:700 clamp(23px,4vw,34px)/1.35 var(--serif);margin:10px 0 9px;color:#f3e8d4}
+.review-modal h2 em{color:#e6bc81;font-style:normal}
+.review-modal>p{font-size:12px;color:#b6cbca;line-height:1.8}
+.review-modal>p strong{color:#f5d5a0}
+.review-clock{width:68px;height:68px;border:1px solid rgba(228,193,137,.4);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:17px auto;background:rgba(224,181,113,.08)}
+.review-clock strong{font-size:30px;color:#f3d59f;line-height:1;font-variant-numeric:tabular-nums}
+.review-clock small{font-size:10px;color:#c5c9bf;margin-top:4px}
+.review-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(91px,1fr));gap:9px;margin:15px auto;max-width:610px}
+.review-card{min-height:135px;border:1px solid rgba(155,199,195,.32);border-radius:11px;background:linear-gradient(145deg,#25404a,#102b35);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;box-shadow:0 7px 19px rgba(0,0,0,.16)}
+.review-card span{font:700 45px/1 var(--serif);color:#b1ccca}
+.review-card strong{color:#c9dad8;font-size:12px}
+.review-card.treasure span,.review-card.treasure strong{color:#f0c880}
+.review-card.kraken span,.review-card.kraken strong{color:#efa79f}
+.review-summary{border-top:1px solid rgba(190,207,194,.14);padding-top:15px;margin-top:16px;font-size:12px;color:#afc7c4}
+.review-summary b{font-size:16px;color:#f4d19a;margin-right:7px}
+.review-modal .review-warning{margin:12px auto;max-width:500px;color:#8eaeb0;font-size:11px}
+.review-warning b{color:#d0e4dd}
+.review-next{margin-top:14px;color:#ead1a2;font-size:12px;font-weight:700}
+.claim-audit{border:1px solid rgba(136,190,183,.27);border-radius:10px;background:rgba(31,68,73,.26);padding:11px 14px;display:flex;flex-direction:column;gap:5px;line-height:1.6;margin-bottom:15px}
+.claim-audit span{font-size:12px;color:#e0e9df}
+.claim-audit strong{color:#f2d19a;font-weight:900}
+.claim-audit small{font-size:11px;color:#9cbfbc}
+.claim-audit.mismatch{border-color:rgba(230,184,119,.47);background:rgba(111,71,30,.16)}
+.claim-audit.mismatch small{color:#e9c392}
+@media(max-width:670px){.review-modal{padding:18px 12px}.review-cards{gap:5px;grid-template-columns:repeat(auto-fit,minmax(59px,1fr))}.review-card{min-height:99px;gap:6px}.review-card span{font-size:31px}.review-card strong{font-size:10px}.review-clock{margin:10px auto}.review-modal .review-warning{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.review-overlay{animation:none}}
