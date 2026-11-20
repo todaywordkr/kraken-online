@@ -57,10 +57,10 @@ export function newGame(roster) {
     ...Array(settings.skeleton).fill('skeleton'),
   ]).slice(0, count);
   const game = {
-    phase: 'playing', round: 1, actionInRound: 0, nextCardId: 1,
-    players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [] })),
+    phase: 'shuffling', round: 1, actionInRound: 0, nextCardId: 1,
+    players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [], claim: null })),
     currentId: roster[randomInt(count)].id,
-    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null,
+    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
   };
   deal(game, [
     ...Array(4 * count - 1).fill('empty'),
@@ -111,39 +111,86 @@ export function selectCard(game, actorId, targetId, cardId) {
   if (card.type === 'kraken') {
     game.winner = 'skeleton';
     game.endReason = '크라켄이 깨어났습니다!';
-    game.phase = 'finished';
   } else if (game.revealed.filter((r) => r.type === 'treasure').length === game.players.length) {
     game.winner = 'crew';
     game.endReason = '모든 보물을 찾았습니다!';
-    game.phase = 'finished';
-  } else if (game.actionInRound === game.players.length) {
-    if (game.round === MAX_ROUNDS) {
-      game.winner = 'skeleton';
-      game.endReason = '4라운드가 끝날 때까지 보물을 모두 찾지 못했습니다.';
-      game.phase = 'finished';
-    } else {
-      // The server deliberately pauses here, so every online player sees the
-      // same round-end animation before a new hand is dealt.
-      game.phase = 'shuffling';
-      game.log.push({ kind: 'round', message: `${game.round}라운드 종료! 남은 카드만 다시 섞고 있습니다.` });
-    }
+  } else if (game.actionInRound === game.players.length && game.round === MAX_ROUNDS) {
+    game.winner = 'skeleton';
+    game.endReason = '4라운드가 끝날 때까지 보물을 모두 찾지 못했습니다.';
+  }
+  if (game.winner || game.actionInRound === game.players.length) {
+    // Keep the last revealed card fully visible before switching screens.
+    game.phase = 'round-end';
+    game.pendingTransition = game.winner ? 'finish' : 'shuffle';
+    game.log.push({ kind:'round', message:`${game.round}라운드 마지막 공개 카드를 확인하는 중입니다.` });
   }
   return reveal;
 }
 
-/** Called by the server after the visible shuffle transition completes. */
-export function finishShuffle(game) {
-  if (game.phase !== 'shuffling' || game.round >= MAX_ROUNDS) {
-    throw new Error('카드를 다시 섞을 차례가 아닙니다.');
+/** Server-controlled pause after the final reveal; no immediate screen change. */
+export function finishRoundReveal(game) {
+  if (game.phase !== 'round-end') throw new Error('마지막 카드를 확인하는 중이 아닙니다.');
+  game.roundEndAt = null;
+  if (game.pendingTransition === 'finish') {
+    game.phase = 'finished';
+    game.log.push({kind:'round',message:`${game.round}라운드 종료 · 게임이 끝났습니다.`});
+  } else {
+    game.phase = 'shuffling';
+    game.shuffleFromRound = game.round;
+    game.log.push({kind:'round',message:`${game.round}라운드 종료 → ${game.round+1}라운드 준비 · 남은 카드를 섞습니다.`});
   }
-  // Revealed cards do not return to the deck.
-  const remaining = game.players.flatMap((p) => p.hand.map((c) => c.type));
-  game.round++;
-  game.actionInRound = 0;
-  deal(game, remaining);
-  game.phase = 'playing';
+  game.pendingTransition = null;
+}
+
+/** Called by the server after the initial or between-round shuffle finishes. */
+export function finishShuffle(game) {
+  if (game.phase !== 'shuffling') throw new Error('카드를 다시 섞을 차례가 아닙니다.');
+  if (game.shuffleFromRound) {
+    if (game.round >= MAX_ROUNDS) throw new Error('마지막 라운드 이후에는 섞을 수 없습니다.');
+    // Revealed cards NEVER return to the deck.
+    const remaining = game.players.flatMap((p) => p.hand.map((c) => c.type));
+    game.round++;
+    game.actionInRound = 0;
+    deal(game, remaining);
+    game.log.push({kind:'round',message:`${game.round-1}라운드 종료 → ${game.round}라운드 시작! 카드 재배분을 완료했습니다.`});
+  } else {
+    game.log.push({kind:'round',message:'1라운드 시작 · 카드 섞기 완료!'});
+  }
+  game.phase = 'declaring';
   game.shuffleEndsAt = null;
-  game.log.push({ kind: 'round', message: `${game.round}라운드 시작! 남은 카드를 섞어 다시 나눴습니다.` });
+  game.claimEndsAt = null; // Server sets exact deadline for all clients.
+  game.players.forEach(p=>{p.claim = null;});
+  game.log.push({kind:'declare',message:`${game.round}라운드 보물 개수 선언 · 5초 안에 숫자를 골라 주세요.`});
+}
+
+/** Public maximum: never exceed the size of this player's hand or remaining global treasures. */
+export function maxTreasureClaim(game, playerId) {
+  const player = game.players.find(p=>p.id===playerId);
+  if (!player) throw new Error('선언할 플레이어를 찾을 수 없습니다.');
+  return Math.min(player.hand.length, game.players.length - game.revealed.filter(c=>c.type==='treasure').length);
+}
+
+/** Declaring can be a bluff; the true amount stays server-side. */
+export function declareTreasure(game, playerId, number) {
+  if (game.phase !== 'declaring') throw new Error('지금은 보물 개수 선언 시간이 아닙니다.');
+  const player = game.players.find(p=>p.id === playerId);
+  if (!player) throw new Error('선언할 플레이어를 찾을 수 없습니다.');
+  if (player.claim !== null) throw new Error('이미 보물 개수를 선언했습니다.');
+  const max = maxTreasureClaim(game, playerId);
+  if (!Number.isInteger(number) || number < 0 || number > max) throw new Error(`보물 개수는 0~${max} 사이에서 골라주세요.`);
+  player.claim = number;
+  return number;
+}
+
+/** At the five-second deadline, missing declarations become truthful automatically. */
+export function finishDeclarations(game) {
+  if (game.phase !== 'declaring') throw new Error('보물 개수 선언 단계가 아닙니다.');
+  for (const player of game.players) {
+    if (player.claim === null) player.claim = totals(player.hand).treasure;
+  }
+  game.phase = 'playing';
+  game.claimEndsAt = null;
+  game.log.push({kind:'declare',message:`${game.round}라운드 선언 완료 · 카드 선택 시작!`});
 }
 
 /** The only safe object to emit to a given online player. */
@@ -155,6 +202,9 @@ export function publicGame(game, viewerId = null) {
     phase: game.phase,
     round: game.round,
     shuffleEndsAt: game.phase === 'shuffling' ? game.shuffleEndsAt : null,
+    shuffleFromRound: game.shuffleFromRound,
+    claimEndsAt: game.phase === 'declaring' ? game.claimEndsAt : null,
+    roundEndAt: game.phase === 'round-end' ? game.roundEndAt : null,
     actionInRound: game.actionInRound,
     currentId: game.currentId,
     playerCount: game.players.length,
@@ -164,13 +214,15 @@ export function publicGame(game, viewerId = null) {
     lastReveal: game.lastReveal,
     pending: game.pending ? {...game.pending} : null,
     revealed: game.revealed.map((r) => ({ ...r })),
-    log: game.log.slice(-24).map((entry) => ({ ...entry })),
+    log: game.log.slice(-64).map((entry) => ({ ...entry })),
     players: game.players.map((p) => ({
       id: p.id,
       name: p.name,
       bot: p.bot,
       difficulty: p.difficulty,
       cards: p.hand.map((c) => c.id),
+      treasureClaim: p.claim,
+      claimMax: game.phase === 'declaring' ? maxTreasureClaim(game,p.id) : null,
       ...(finished ? { role: p.role } : {}),
     })),
     mySecret: viewer ? { role: viewer.role, counts: totals(viewer.hand) } : null,
