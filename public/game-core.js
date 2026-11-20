@@ -58,7 +58,7 @@ export function newGame(roster) {
   ]).slice(0, count);
   const game = {
     phase: 'playing', round: 1, actionInRound: 0, nextCardId: 1,
-    players: roster.map((p, i) => ({ id: p.id, name: p.name, role: roles[i], hand: [] })),
+    players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [] })),
     currentId: roster[randomInt(count)].id,
     revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [],
   };
@@ -153,6 +153,8 @@ export function publicGame(game, viewerId = null) {
     players: game.players.map((p) => ({
       id: p.id,
       name: p.name,
+      bot: p.bot,
+      difficulty: p.difficulty,
       cards: p.hand.map((c) => c.id),
       ...(finished ? { role: p.role } : {}),
     })),
