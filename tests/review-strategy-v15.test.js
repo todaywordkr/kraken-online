@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  newGame, publicGame, selectCard, finishShuffle, finishReview,
+  newGame, publicGame, selectCard, finishShuffle, finishDarkIntro, finishRoleReveal, finishReview,
   finishDeclarations, finishRoundReveal, declareTreasure,
 } from '../public/game-core.js';
 import { analyzeDeclarations, createBotStance, botSpeak, chooseBotMove } from '../bot-ai.js';
@@ -38,6 +38,9 @@ test('5명은 보물 5개, 재분배 시 개인이 0장이었어도 4장을 새�
 
 test('5초 비공개 카드 확인 중 다른 사람 비밀은 숨겨지고 카드 선택과 선언은 막힘',()=>{
   const g=newGame(roster(5));
+  finishDarkIntro(g);
+  assert.equal(g.phase,'role-reveal');
+  finishRoleReveal(g);
   finishShuffle(g);
   assert.equal(g.phase,'reviewing');
   assert.throws(()=>finishDeclarations(g),/선언 단계/);
@@ -57,7 +60,7 @@ test('5초 비공개 카드 확인 중 다른 사람 비밀은 숨겨지고 카�
 });
 
 test('5인 선언 합 8 또는 3은 실제 5와 달라 의심 가능하지만 특정 거짓말쟁이는 모름',()=>{
-  const g=newGame(roster(5));finishShuffle(g);finishReview(g);
+  const g=newGame(roster(5));finishDarkIntro(g);finishRoleReveal(g);finishShuffle(g);finishReview(g);
   const claimed=[3,2,1,1,1];
   for(let i=0;i<5;i++) declareTreasure(g,g.players[i].id,claimed[i]);
   finishDeclarations(g);

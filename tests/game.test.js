@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishReview, finishRoundReveal, finishDeclarations, declareTreasure, maxTreasureClaim, ROLE_COUNTS } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishDarkIntro, finishRoleReveal, finishReview, finishRoundReveal, finishDeclarations, declareTreasure, maxTreasureClaim, ROLE_COUNTS } from '../public/game-core.js';
 
 const roster = n => Array.from({length:n}, (_,i)=>({id:`player-${i}`,name:`항해사 ${i+1}`}));
-const begin = game=>{finishShuffle(game);finishReview(game);finishDeclarations(game);return game};
+const begin = game=>{finishDarkIntro(game);finishRoleReveal(game);finishShuffle(game);finishReview(game);finishDeclarations(game);return game};
 const count = (game, kind) => game.players.flatMap(p=>p.hand).filter(c=>c.type===kind).length + game.revealed.filter(c=>c.type===kind).length;
 
 test('4~8명별 카드 수, 비밀 역할 수, 손패 배분', () => {
   for (let n=4;n<=8;n++) {
     const g = newGame(roster(n));
-    assert.equal(g.phase,'shuffling');
+    assert.equal(g.phase,'intro-dark');
     assert.equal(g.round,1);
     assert.equal(count(g,'empty'),4*n-1);
     assert.equal(count(g,'treasure'),n);
@@ -118,8 +118,11 @@ test('네 번째 라운드가 끝나면 스켈레톤이 승리한다', () => {
 
 test('5초 선언: 개인별 0~최대 보물, 중복 선택 차단, 무응답이면 진실 자동 확정',()=>{
   const g=newGame(roster(6));
-  assert.equal(g.phase,'shuffling');
+  assert.equal(g.phase,'intro-dark');
   assert.throws(()=>selectCard(g,g.currentId,g.players[1].id,g.players[1].hand[0].id),/진행 중/);
+  finishDarkIntro(g);
+  assert.equal(g.phase,'role-reveal');
+  finishRoleReveal(g);
   finishShuffle(g);
   assert.equal(g.phase,'reviewing');
   assert.throws(()=>declareTreasure(g,g.players[0].id,0),/선언/);

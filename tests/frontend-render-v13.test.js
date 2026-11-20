@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, publicGame, selectCard, finishShuffle,finishReview,finishDeclarations,finishRoundReveal,declareTreasure } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, finishShuffle, finishDarkIntro, finishRoleReveal,finishReview,finishDeclarations,finishRoundReveal,declareTreasure } from '../public/game-core.js';
 
 // Lightweight DOM harness: validate browser-facing templates without installing dependencies.
 test('채팅 질문 버튼·라운드 배지·페이드 로더가 실제 앱 템플릿에서 렌더링된다', async () => {
   const roster = Array.from({length:4},(_,i)=>({id:`p${i}`,name:i?`AI 테스터${i}`:'사람',bot:i>0,difficulty:'normal'}));
-  const game=newGame(roster);finishShuffle(game);finishReview(game);finishDeclarations(game);
+  const game=newGame(roster);finishDarkIntro(game);finishRoleReveal(game);finishShuffle(game);finishReview(game);finishDeclarations(game);
   const session={code:'TEST12',token:'test-token',name:'사람'};
   const room=()=>({
     code:session.code, myId:roster[0].id,hostId:roster[0].id,
@@ -33,6 +33,19 @@ test('채팅 질문 버튼·라운드 배지·페이드 로더가 실제 앱 템
   globalThis.fetch=async()=>({ok:true,json:async()=>({ok:true,code:session.code,token:session.token,state:room()})});
   await import('../public/app.js');
   await new Promise(resolve=>setTimeout(resolve,20));
+  // UI changes are viewer-private; initial blackout and reveal must cover the game.
+  game.phase='intro-dark';game.shuffleFromRound=0;
+  stream.onmessage({data:JSON.stringify(room())});
+  assert.match(root.innerHTML,/intro-dark-overlay/);
+  assert.match(root.innerHTML,/잠시 후 당신의 역할을 공개합니다/);
+  game.phase='role-reveal';game.roleEndsAt=Date.now()+3000;
+  stream.onmessage({data:JSON.stringify(room())});
+  assert.match(root.innerHTML,/intro-role-overlay/);
+  assert.match(root.innerHTML,/data-role-countdown/);
+  assert.match(root.innerHTML,new RegExp(game.players[0].role === 'crew' ? '탐험대' : '스켈레톤'));
+  assert.doesNotMatch(root.innerHTML,/내 카드 확인 시간/);
+  game.phase='playing';game.roleEndsAt=null;
+  stream.onmessage({data:JSON.stringify(room())});
   assert.match(root.innerHTML,/AI에게 직접 질문/);
   assert.match(root.innerHTML,/data-topic="treasure"/);
   assert.match(root.innerHTML,/data-topic="kraken"/);

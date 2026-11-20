@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../server.js';
 import { classifyCardQuestion, createBotStance, botSpeak } from '../bot-ai.js';
-import { newGame, publicGame, selectCard, finishShuffle,finishReview,finishDeclarations,finishRoundReveal } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, finishShuffle, finishDarkIntro, finishRoleReveal,finishReview,finishDeclarations,finishRoundReveal } from '../public/game-core.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const roster = Array.from({length:4},(_,i)=>({ id:`p${i}`,name:`선원${i}` }));
@@ -26,7 +26,7 @@ test('카드 질문 구분, 주장 일관성, 크라켄의 전략적 답변', ()
 });
 
 test('탐험 기록에 이전 라운드 종료와 다음 라운드 시작이 합쳐서 남는다',()=>{
-  const g = newGame(roster);finishShuffle(g);finishReview(g);finishDeclarations(g);
+  const g = newGame(roster);finishDarkIntro(g);finishRoleReveal(g);finishShuffle(g);finishReview(g);finishDeclarations(g);
   for (let i=0;i<4;i++) {
     const target = g.players.find(p=>p.id!==g.currentId && p.hand.some(c=>c.type==='empty'));
     selectCard(g,g.currentId,target.id,target.hand.find(c=>c.type==='empty').id);
@@ -36,7 +36,7 @@ test('탐험 기록에 이전 라운드 종료와 다음 라운드 시작이 합
   assert.ok(g.log.some(x=>x.message.includes('1라운드 종료 → 2라운드 시작')));
 });
 
-const server=createServer({botDelayMs:100_000,replyDelayMs:400,shuffleDelayMs:40,reviewDelayMs:40,claimDelayMs:75,revealDelayMs:70});
+const server=createServer({botDelayMs:100_000,replyDelayMs:400,shuffleDelayMs:40,roleDelayMs:40,reviewDelayMs:40,claimDelayMs:75,revealDelayMs:70});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
 const api=async (action,data={})=>{
@@ -57,7 +57,7 @@ test('아직 말하지 않은 AI에게 질문해도 답하고, 짧은 간격의 
   try {
     for(let i=0;i<3;i++) assert.equal((await api('add-bot',{...owner,difficulty:'hard'})).status,200);
     assert.equal((await api('start',owner)).status,200);
-    await pause(170);
+    await waitFor(async()=>{const now=(await api('resume',owner)).state;return now.game.phase==='playing' ? now : null;},5000);
     const starting=(await api('resume',owner)).state;
     const bots=starting.players.filter(p=>p.bot);
     assert.equal(bots.length,3);

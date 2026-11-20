@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from '../server.js';
 import {chooseBotMove, botSpeak, shouldReply} from '../bot-ai.js';
-import {newGame, publicGame, finishShuffle, finishReview, finishDeclarations} from '../public/game-core.js';
+import {newGame, publicGame, finishShuffle, finishDarkIntro, finishRoleReveal, finishReview, finishDeclarations} from '../public/game-core.js';
 
 const roster = () => Array.from({length:4},(_,i)=>({id:`p${i}`,name:`AI${i}`,bot:true,difficulty:'hard'}));
 
 test('AI picks only publicly selectable cards; decision uses redacted player view', () => {
   const g = newGame(roster());
-  finishShuffle(g);finishReview(g);finishDeclarations(g);
+  finishDarkIntro(g);finishRoleReveal(g);finishShuffle(g);finishReview(g);finishDeclarations(g);
   const id = g.currentId;
   const view = publicGame(g,id);
   assert.equal(view.players.every(p=>p.bot), true);
@@ -23,7 +23,7 @@ test('AI picks only publicly selectable cards; decision uses redacted player vie
   assert.equal(shouldReply('크라켄 있어?', 'hard',()=>0.3),true);
 });
 
-const server=createServer({botDelayMs:65, shuffleDelayMs:40,reviewDelayMs:45,claimDelayMs:90,revealDelayMs:75});
+const server=createServer({botDelayMs:65, darkDelayMs:40,shuffleDelayMs:40,roleDelayMs:40,reviewDelayMs:45,claimDelayMs:90,revealDelayMs:75});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const api = async(action,data={}) => {
@@ -55,15 +55,15 @@ test('1 human + 3 AI: real server starts, turns are automatic, chat replies, vic
     assert.deepEqual(lobby.players.filter(p=>p.bot).map(p=>p.difficulty),['easy','normal','hard']);
     assert.equal((await api('start',s)).status,200);
     assert.equal((await api('add-bot',{...s,difficulty:'hard'})).status,409);
-    await pause(240);
+    for(let i=0;i<30;i++){if((await api('resume',s)).state.game.phase==='playing')break;await pause(30);}
     assert.equal((await api('chat',{...s,text:`${lobby.players.find(p=>p.bot).name} 크라켄 어디있어?`})).status,200);
-    await pause(220);
+    await pause(260);
     let snapshot=(await api('resume',s)).state;
     assert.ok(snapshot.messages.some(m=>m.bot));
     assert.ok(snapshot.messages.some(m=>m.bot && m.text.includes('크라켄')));
     assert.ok(snapshot.game.players.filter(p=>p.bot).every(p=>snapshot.game.phase === 'finished' ? Boolean(p.role) : !('role' in p))); // victory legitimately reveals roles
     let steps=0;
-    const until=Date.now()+7500;
+    const until=Date.now()+11000;
     while(Date.now()<until && snapshot.game.phase!=='finished') {
       const g=snapshot.game;
       if (g.phase === 'playing' && g.currentId===snapshot.myId && !g.pending) {
