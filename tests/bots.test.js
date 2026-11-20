@@ -22,7 +22,7 @@ test('AI picks only publicly selectable cards; decision uses redacted player vie
   assert.equal(shouldReply('크라켄 있어?', 'hard',()=>0.3),true);
 });
 
-const server=createServer({botDelayMs: 65});
+const server=createServer({botDelayMs: 65, shuffleDelayMs: 40});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const api = async(action,data={}) => {
@@ -59,12 +59,12 @@ test('1 human + 3 AI: real server starts, turns are automatic, chat replies, vic
     let snapshot=(await api('resume',s)).state;
     assert.ok(snapshot.messages.some(m=>m.bot));
     assert.ok(snapshot.messages.some(m=>m.bot && m.text.includes('크라켄')));
-    assert.ok(snapshot.game.players.filter(p=>p.bot).every(p=>!('role' in p)));
+    assert.ok(snapshot.game.players.filter(p=>p.bot).every(p=>snapshot.game.phase === 'finished' ? Boolean(p.role) : !('role' in p))); // victory legitimately reveals roles
     let steps=0;
     const until=Date.now()+7500;
-    while(Date.now()<until && snapshot.game.phase==='playing') {
+    while(Date.now()<until && snapshot.game.phase!=='finished') {
       const g=snapshot.game;
-      if (g.currentId===snapshot.myId && !g.pending) {
+      if (g.phase === 'playing' && g.currentId===snapshot.myId && !g.pending) {
         const cardOwner=g.players.find(p=>p.id!==g.currentId && p.cards.length);
         const result=await api('pick',{...s,targetId:cardOwner.id,cardId:cardOwner.cards[0]});
         assert.equal(result.status,200,JSON.stringify(result));

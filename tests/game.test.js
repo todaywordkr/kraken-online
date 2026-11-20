@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, publicGame, selectCard, markCard, clearMark, ROLE_COUNTS } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, ROLE_COUNTS } from '../public/game-core.js';
 
 const roster = n => Array.from({length:n}, (_,i)=>({id:`player-${i}`,name:`항해사 ${i+1}`}));
 const count = (game, kind) => game.players.flatMap(p=>p.hand).filter(c=>c.type===kind).length + game.revealed.filter(c=>c.type===kind).length;
@@ -59,11 +59,17 @@ test('한 라운드에 인원수만큼 공개 시 다시 섞어 인당 4장을 �
     assert.ok(target);
     selectCard(g,g.currentId,target.id,target.hand.find(c=>c.type==='empty').id);
   }
+  assert.equal(g.round,1);
+  assert.equal(g.actionInRound,4);
+  assert.equal(g.phase,'shuffling');
+  assert.throws(() => selectCard(g,g.currentId,g.players[0].id,g.players[0].hand[0].id), /진행 중/);
+  assert.equal(g.revealed.length,4);
+  finishShuffle(g);
   assert.equal(g.round,2);
   assert.equal(g.actionInRound,0);
-  assert.equal(g.revealed.length,4);
   assert.equal(g.phase,'playing');
   assert.ok(g.players.every(p=>p.hand.length===4));
+  assert.throws(() => finishShuffle(g), /차례/);
   assert.equal(count(g,'kraken'),1);
 });
 
