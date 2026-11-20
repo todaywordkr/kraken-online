@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newGame, publicGame, selectCard, markCard, clearMark } from './public/game-core.js';
+import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply } from './bot-ai.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const rooms = new Map();
@@ -31,7 +32,7 @@ function newCode() {
 function view(room, viewer) {
   return {
     code: room.code, myId: viewer.id, hostId: room.hostId,
-    players: room.players.map(({ id, name, ready, streams }) => ({ id, name, ready, connected: streams.size > 0 })),
+    players: room.players.map(({ id, name, ready, streams, bot, difficulty }) => ({ id, name, ready, bot: Boolean(bot), difficulty: bot ? difficulty : null, connected: bot || streams.size > 0 })),
     game: publicGame(room.game, viewer.id),
     messages: room.messages.slice(-70),
   };
@@ -46,7 +47,7 @@ function notify(room) {
 }
 function membership(input) {
   const room = rooms.get(cleanCode(input.code));
-  const person = room?.players.find(p => p.token === input.token);
+  const person = room && typeof input.token === 'string' ? room.players.find(p => !p.bot && p.token === input.token) : null;
   if (!room || !person) throw err(401, '세션이 만료되었거나 잘못된 방입니다.');
   return { room, person };
 }
@@ -55,7 +56,7 @@ function addPlayer(room, name) {
   if (room.players.length >= 8) throw err(409, '방이 가득 찼습니다.');
   const clean = cleanName(name);
   if (!clean) throw err(400, '닉네임을 입력해주세요.');
-  const p = { id: uid(), name: clean, token: token(), ready: false, streams: new Set(), lastChat: 0 };
+  const p = { id: uid(), name: clean, token: token(), bot: false, difficulty: null, ready: false, streams: new Set(), lastChat: 0 };
   room.players.push(p);
   notify(room);
   return p;
@@ -64,9 +65,79 @@ function removePlayer(room, person) {
   for (const stream of person.streams) stream.end();
   person.streams.clear();
   room.players = room.players.filter(p => p !== person);
-  if (room.hostId === person.id) room.hostId = room.players[0]?.id ?? null;
-  if (room.players.length === 0) rooms.delete(room.code);
+  if (room.hostId === person.id) room.hostId = room.players.find(p => !p.bot)?.id ?? null;
+  if (room.hostId === null) { clearRoomTimers(room); rooms.delete(room.code); }
   else notify(room);
+}
+const BOT_NAMES = ['루나', '코랄', '네모', '파도', '닻별', '해초', '진주', '푸른눈', '소금', '아쿠아'];
+const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
+function clearRoomTimers(room) {
+  clearTimeout(room.botTimer); clearTimeout(room.replyTimer);
+  room.botTimer = null; room.replyTimer = null;
+}
+function addBot(room, difficulty) {
+  if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
+  if (!VALID_DIFFICULTIES.has(difficulty)) throw err(400, 'AI 난이도는 쉬움, 보통, 어려움 중 하나여야 합니다.');
+  const available = BOT_NAMES.find(name => !room.players.some(p => p.name === `AI ${name}`));
+  const name = available ? `AI ${available}` : `AI ${room.players.length + 1}`;
+  room.players.push({ id: uid(), name, bot: true, difficulty, token: null, ready: true, streams: new Set(), lastChat: 0 });
+}
+function botMessage(room, bot, textValue) {
+  if (!textValue || !room.game) return;
+  room.messages.push({ id: uid(), playerId: bot.id, name: bot.name, text: String(textValue).slice(0, 180), bot: true, round: room.game.round });
+  room.messages = room.messages.slice(-70);
+  notify(room);
+}
+function gameViewForBot(room, bot) { return publicGame(room.game, bot.id); }
+function sendBotIntro(room, contextType) {
+  const list = room.players.filter(p=>p.bot);
+  if (!list.length || !room.game || room.game.phase !== 'playing') return;
+  // Avoid flooding a room of 7 bots with claims all at once.
+  const speakers = list.slice(0, Math.min(2, list.length));
+  for (const bot of speakers) {
+    botMessage(room, bot, botSpeak(gameViewForBot(room,bot), room.messages, bot.difficulty, { type: contextType }));
+  }
+}
+function scheduleBotTurn(room) {
+  clearTimeout(room.botTimer); room.botTimer = null;
+  if (!room.game || room.game.phase !== 'playing') return;
+  const bot = room.players.find(p => p.id === room.game.currentId && p.bot);
+  if (!bot) return;
+  const currentId = bot.id;
+  const delay = Math.max(20, room.botDelayMs ?? (bot.difficulty === 'easy' ? 1250 : bot.difficulty === 'hard' ? 2500 : 1900));
+  room.botTimer = setTimeout(() => {
+    if (!room.game || room.game.phase !== 'playing' || room.game.currentId !== currentId) return;
+    try {
+      const decision = chooseBotMove(gameViewForBot(room,bot),room.messages,bot.difficulty);
+      markCard(room.game,bot.id,decision.targetId,decision.cardId);
+      if (Math.random() < 0.85) botMessage(room,bot,botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,{type:'turn',targetName:decision.targetName}));
+      notify(room);
+      room.botTimer = setTimeout(() => {
+        if (!room.game || room.game.phase !== 'playing' || room.game.currentId !== currentId) return;
+        try {
+          const previousRound = room.game.round;
+          selectCard(room.game,bot.id,decision.targetId,decision.cardId);
+          notify(room);
+          if (room.game.phase === 'playing' && room.game.round !== previousRound) sendBotIntro(room,'round');
+          scheduleBotTurn(room);
+        } catch (e) { console.error('AI 카드 공개 실패', e); scheduleBotTurn(room); }
+      }, Math.max(30, Math.min(1100, Math.floor(delay * 0.55))));
+    } catch (e) { console.error('AI 선택 실패', e); }
+  }, delay);
+}
+function scheduleBotReply(room, humanMessage) {
+  if (room.replyTimer || room.game?.phase !== 'playing') return;
+  const bots = room.players.filter(p=>p.bot);
+  if (!bots.length) return;
+  const tagged = bots.find(b=>humanMessage.text.includes(b.name));
+  const bot = tagged || bots[Math.floor(Math.random() * bots.length)];
+  if (!tagged && !shouldReply(humanMessage.text,bot.difficulty)) return;
+  room.replyTimer = setTimeout(() => {
+    room.replyTimer = null;
+    if (room.game?.phase !== 'playing' || !room.players.includes(bot)) return;
+    const reply = botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,{type:'reply',text:humanMessage.text});
+    botMessage(room,bot,reply);
+  }, Math.max(50,Math.min(1850,room.botDelayMs ?? 1100)));
 }
 async function receiveBody(req) {
   let text = '';
@@ -81,11 +152,11 @@ function json(res, status, obj) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(JSON.stringify(obj));
 }
-async function api(action, data) {
+async function api(action, data, options = {}) {
   if (action === 'create') {
     const name = cleanName(data.name);
     if (!name) throw err(400, '닉네임을 입력해주세요.');
-    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now() };
+    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, botDelayMs: options.botDelayMs };
     rooms.set(room.code, room);
     const person = addPlayer(room, name);
     person.ready = true;
@@ -95,7 +166,7 @@ async function api(action, data) {
   if (action === 'join') {
     const room = rooms.get(cleanCode(data.code));
     if (!room) throw err(404, '방을 찾을 수 없습니다. 초대 코드를 확인해주세요.');
-    const person = data.token ? room.players.find(p => p.token === data.token) : null;
+    const person = typeof data.token === 'string' ? room.players.find(p => !p.bot && p.token === data.token) : null;
     const joined = person ?? addPlayer(room, data.name);
     return { code: room.code, token: joined.token, state: view(room, joined) };
   }
@@ -104,6 +175,22 @@ async function api(action, data) {
     return { code: room.code, token: person.token, state: view(room, person) };
   }
   const { room, person } = membership(data);
+  if (action === 'add-bot' || action === 'remove-bot' || action === 'bot-difficulty') {
+    if (room.hostId !== person.id) throw err(403, 'AI 설정은 방장만 변경할 수 있습니다.');
+    if (room.game) throw err(409, '게임이 시작된 후에는 AI 구성을 변경할 수 없습니다.');
+    if (action === 'add-bot') addBot(room, data.difficulty || 'normal');
+    else {
+      const bot = room.players.find(p => p.id === data.botId && p.bot);
+      if (!bot) throw err(404, '해당 AI 플레이어를 찾을 수 없습니다.');
+      if (action === 'remove-bot') room.players = room.players.filter(p=>p !== bot);
+      else {
+        if (!VALID_DIFFICULTIES.has(data.difficulty)) throw err(400, '지원하지 않는 AI 난이도입니다.');
+        bot.difficulty = data.difficulty;
+      }
+    }
+    notify(room);
+    return {};
+  }
   if (action === 'ready') {
     if (room.game) throw err(409, '이미 게임이 시작됐습니다.');
     person.ready = !person.ready;
@@ -114,9 +201,12 @@ async function api(action, data) {
     if (room.hostId !== person.id) throw err(403, '방장만 게임을 시작할 수 있습니다.');
     if (room.game) throw err(409, '이미 게임이 시작됐습니다.');
     if (room.players.length < 4 || room.players.length > 8) throw err(409, '4~8명이 모여야 합니다.');
-    if (room.players.some(p => !p.ready || p.streams.size === 0)) throw err(409, '전원이 접속해 준비 완료해야 합니다.');
-    room.game = newGame(room.players.map(({id, name}) => ({id, name})));
+    if (room.players.some(p => !p.ready || (!p.bot && p.streams.size === 0))) throw err(409, '전원이 접속해 준비 완료해야 합니다.');
+    room.messages = [];
+    room.game = newGame(room.players.map(({id, name, bot, difficulty}) => ({id, name, bot, difficulty})));
     notify(room);
+    sendBotIntro(room, 'intro');
+    scheduleBotTurn(room);
     return {};
   }
   if (action === 'mark' || action === 'unmark') {
@@ -131,9 +221,12 @@ async function api(action, data) {
   if (action === 'pick') {
     if (!room.game) throw err(409, '진행 중인 게임이 아닙니다.');
     if (typeof data.targetId !== 'string' || typeof data.cardId !== 'string') throw err(400, '잘못된 카드 선택입니다.');
+    const priorRound = room.game.round;
     try { selectCard(room.game, person.id, data.targetId, data.cardId); }
     catch (e) { throw err(409, e.message); }
     notify(room);
+    if (room.game.phase === 'playing' && room.game.round !== priorRound) sendBotIntro(room,'round');
+    scheduleBotTurn(room);
     return {};
   }
   if (action === 'chat') {
@@ -141,17 +234,20 @@ async function api(action, data) {
     if (!value) throw err(400, '메시지를 입력해주세요.');
     if (Date.now() - person.lastChat < 450) throw err(429, '조금 천천히 메시지를 보내주세요.');
     person.lastChat = Date.now();
-    room.messages.push({ id: uid(), playerId: person.id, name: person.name, text: value });
+    const humanMessage = { id: uid(), playerId: person.id, name: person.name, text: value, bot: false, round: room.game?.round ?? 0 };
+    room.messages.push(humanMessage);
     room.messages = room.messages.slice(-70);
     notify(room);
+    scheduleBotReply(room, humanMessage);
     return {};
   }
   if (action === 'restart') {
     if (room.hostId !== person.id) throw err(403, '방장만 새 게임을 준비할 수 있습니다.');
     if (room.game?.phase !== 'finished') throw err(409, '게임이 끝난 후에만 다시 시작할 수 있습니다.');
+    clearRoomTimers(room);
     room.game = null;
     room.messages = [];
-    for (const p of room.players) p.ready = (p.id === room.hostId);
+    for (const p of room.players) p.ready = p.bot || (p.id === room.hostId);
     notify(room);
     return {};
   }
@@ -183,7 +279,7 @@ function openEvents(req, res, url) {
   notify(room);
 }
 
-export function createServer() {
+export function createServer(options = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://localhost');
     try {
@@ -191,7 +287,7 @@ export function createServer() {
       if (req.method === 'GET' && url.pathname === '/api/events') return openEvents(req, res, url);
       if (req.method === 'POST' && url.pathname.startsWith('/api/')) {
         const data = await receiveBody(req);
-        const value = await api(url.pathname.slice(5), data);
+        const value = await api(url.pathname.slice(5), data, options);
         return json(res, 200, { ok: true, ...value });
       }
       const entry = req.method === 'GET' ? staticFiles[url.pathname] : null;
@@ -213,7 +309,7 @@ export function createServer() {
 setInterval(() => {
   const now = Date.now();
   for (const [id, room] of rooms) {
-    if (room.players.every(p => p.streams.size === 0) && now - room.lastUsed > 30 * 60_000) rooms.delete(id);
+    if (room.players.filter(p=>!p.bot).every(p => p.streams.size === 0) && now - room.lastUsed > 30 * 60_000) { clearRoomTimers(room); rooms.delete(id); }
   }
 }, 60_000).unref();
 

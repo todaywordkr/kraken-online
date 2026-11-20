@@ -1,9 +1,9 @@
 {
   "name": "kraken-online",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "노터치 크라켄 기본 규칙을 바탕으로 만든 비공식 실시간 온라인 카드 추리 게임",
+  "description": "노터치 크라켄 기본 규칙을 바탕으로 만든 비공식 실시간 온라인 카드 추리 게임 + 전략 AI 봇",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
