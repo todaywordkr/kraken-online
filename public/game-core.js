@@ -1,0 +1,168 @@
+/** Shared, deterministic rule transitions. Never send this full game object to an online client. */
+export const MIN_PLAYERS = 4;
+export const MAX_PLAYERS = 8;
+export const MAX_ROUNDS = 4;
+export const ROLE_COUNTS = {
+  4: { crew: 3, skeleton: 2 },
+  5: { crew: 4, skeleton: 2 },
+  6: { crew: 4, skeleton: 2 },
+  7: { crew: 5, skeleton: 3 },
+  8: { crew: 6, skeleton: 3 },
+};
+export const CARD_LABELS = { empty: '빈 상자', treasure: '보물 상자', kraken: '크라켄' };
+
+function randomInt(max) {
+  if (globalThis.crypto?.getRandomValues) {
+    const a = new Uint32Array(1);
+    const bound = 0x100000000 - (0x100000000 % max);
+    do { globalThis.crypto.getRandomValues(a); } while (a[0] >= bound);
+    return a[0] % max;
+  }
+  return Math.floor(Math.random() * max);
+}
+function shuffle(values) {
+  const a = [...values];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function totals(hand) {
+  return {
+    empty: hand.filter((c) => c.type === 'empty').length,
+    treasure: hand.filter((c) => c.type === 'treasure').length,
+    kraken: hand.filter((c) => c.type === 'kraken').length,
+  };
+}
+function deal(game, types) {
+  const shuffled = shuffle(types);
+  const perPlayer = shuffled.length / game.players.length;
+  if (!Number.isInteger(perPlayer)) throw new Error('카드를 균등하게 나눌 수 없습니다.');
+  game.players.forEach((p, idx) => {
+    const slice = shuffled.slice(idx * perPlayer, (idx + 1) * perPlayer);
+    p.hand = shuffle(slice.map((type) => ({ id: `c${game.nextCardId++}`, type })));
+  });
+}
+export function newGame(roster) {
+  if (!Array.isArray(roster) || roster.length < MIN_PLAYERS || roster.length > MAX_PLAYERS) {
+    throw new Error('플레이어는 4~8명이 필요합니다.');
+  }
+  if (new Set(roster.map((p) => p.id)).size !== roster.length) throw new Error('중복된 플레이어 ID가 있습니다.');
+  const count = roster.length;
+  // Role deck can contain one unused card; remove the unused card without showing it.
+  const settings = ROLE_COUNTS[count];
+  const roles = shuffle([
+    ...Array(settings.crew).fill('crew'),
+    ...Array(settings.skeleton).fill('skeleton'),
+  ]).slice(0, count);
+  const game = {
+    phase: 'playing', round: 1, actionInRound: 0, nextCardId: 1,
+    players: roster.map((p, i) => ({ id: p.id, name: p.name, role: roles[i], hand: [] })),
+    currentId: roster[randomInt(count)].id,
+    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [],
+  };
+  deal(game, [
+    ...Array(4 * count - 1).fill('empty'),
+    ...Array(count).fill('treasure'),
+    'kraken',
+  ]);
+  game.log.push({ kind: 'start', message: `항해 시작! ${count}명의 플레이어가 4라운드에 도전합니다.` });
+  return game;
+}
+
+function validatedChoice(game, actorId, targetId, cardId) {
+  if (game.phase !== 'playing') throw new Error('현재 진행 중인 게임이 아닙니다.');
+  if (game.currentId !== actorId) throw new Error('현재 행동할 차례가 아닙니다.');
+  if (actorId === targetId) throw new Error('자기 카드는 선택할 수 없습니다.');
+  const owner = game.players.find(p => p.id === targetId);
+  if (!owner) throw new Error('해당 플레이어가 없습니다.');
+  const idx = owner.hand.findIndex(c => c.id === cardId);
+  if (idx < 0) throw new Error('이미 공개했거나 존재하지 않는 카드입니다.');
+  return { owner, idx };
+}
+/** A public action marker. Anyone can see which card is being discussed. */
+export function markCard(game, actorId, targetId, cardId) {
+  validatedChoice(game, actorId, targetId, cardId);
+  game.pending = { actorId, targetId, cardId };
+  return game.pending;
+}
+export function clearMark(game, actorId) {
+  if (game.phase !== 'playing' || game.currentId !== actorId) throw new Error('현재 행동할 차례가 아닙니다.');
+  game.pending = null;
+}
+
+export function selectCard(game, actorId, targetId, cardId) {
+  const { owner, idx } = validatedChoice(game, actorId, targetId, cardId);
+  if (game.pending && (game.pending.actorId !== actorId || game.pending.targetId !== targetId || game.pending.cardId !== cardId)) throw new Error('현재 표시된 카드만 공개할 수 있습니다.');
+  game.pending = null;
+  const [card] = owner.hand.splice(idx, 1);
+  const actor = game.players.find((p) => p.id === actorId);
+  const reveal = {
+    id: card.id, type: card.type, ownerId: owner.id,
+    ownerName: owner.name, actorName: actor.name, round: game.round,
+  };
+  game.revealed.push(reveal);
+  game.lastReveal = reveal;
+  game.actionInRound++;
+  game.currentId = owner.id;
+  game.log.push({ kind: card.type, message: `${actor.name}님이 ${owner.name}님의 카드를 열었습니다: ${CARD_LABELS[card.type]}` });
+
+  if (card.type === 'kraken') {
+    game.winner = 'skeleton';
+    game.endReason = '크라켄이 깨어났습니다!';
+    game.phase = 'finished';
+  } else if (game.revealed.filter((r) => r.type === 'treasure').length === game.players.length) {
+    game.winner = 'crew';
+    game.endReason = '모든 보물을 찾았습니다!';
+    game.phase = 'finished';
+  } else if (game.actionInRound === game.players.length) {
+    if (game.round === MAX_ROUNDS) {
+      game.winner = 'skeleton';
+      game.endReason = '4라운드가 끝날 때까지 보물을 모두 찾지 못했습니다.';
+      game.phase = 'finished';
+    } else {
+      const remaining = game.players.flatMap((p) => p.hand.map((c) => c.type));
+      game.round++;
+      game.actionInRound = 0;
+      deal(game, remaining);
+      game.log.push({ kind: 'round', message: `${game.round}라운드 시작! 남은 카드를 다시 섞어 배분했습니다.` });
+    }
+  }
+  return reveal;
+}
+
+/** The only safe object to emit to a given online player. */
+export function publicGame(game, viewerId = null) {
+  if (!game) return null;
+  const viewer = game.players.find((p) => p.id === viewerId);
+  const finished = game.phase === 'finished';
+  return {
+    phase: game.phase,
+    round: game.round,
+    actionInRound: game.actionInRound,
+    currentId: game.currentId,
+    playerCount: game.players.length,
+    treasuresFound: game.revealed.filter((r) => r.type === 'treasure').length,
+    winner: game.winner,
+    endReason: game.endReason,
+    lastReveal: game.lastReveal,
+    pending: game.pending ? {...game.pending} : null,
+    revealed: game.revealed.map((r) => ({ ...r })),
+    log: game.log.slice(-24).map((entry) => ({ ...entry })),
+    players: game.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      cards: p.hand.map((c) => c.id),
+      ...(finished ? { role: p.role } : {}),
+    })),
+    mySecret: viewer ? { role: viewer.role, counts: totals(viewer.hand) } : null,
+  };
+}
+
+/** Only for single-device, private pass-the-phone screen. */
+export function privateInfo(game, playerId) {
+  const p = game.players.find((person) => person.id === playerId);
+  if (!p) throw new Error('없는 플레이어입니다.');
+  return { id: p.id, name: p.name, role: p.role, counts: totals(p.hand) };
+}
