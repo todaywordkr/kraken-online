@@ -57,10 +57,10 @@ export function newGame(roster) {
     ...Array(settings.skeleton).fill('skeleton'),
   ]).slice(0, count);
   const game = {
-    phase: 'shuffling', round: 1, actionInRound: 0, nextCardId: 1,
+    phase: 'intro-dark', round: 1, actionInRound: 0, nextCardId: 1,
     players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [], claim: null })),
     currentId: roster[randomInt(count)].id,
-    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
+    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, darkEndsAt: null, roleEndsAt: null, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
   };
   deal(game, [
     ...Array(4 * count - 1).fill('empty'),
@@ -137,9 +137,19 @@ export function finishRoundReveal(game) {
   } else {
     game.phase = 'shuffling';
     game.shuffleFromRound = game.round;
+    game.players.forEach(p => {p.claim = null;}); // Stale last-round votes must not appear as this round's votes.
     game.log.push({kind:'round',message:`${game.round}라운드 종료 → ${game.round+1}라운드 준비 · 남은 카드를 섞습니다.`});
   }
   game.pendingTransition = null;
+}
+
+/** The first game starts with a 2-second blackout, then a private role reveal. */
+export function finishDarkIntro(game) {
+  if (game.phase !== 'intro-dark' || game.round !== 1) throw new Error('처음 암막 단계가 아닙니다.');
+  game.phase = 'role-reveal';
+  game.darkEndsAt = null;
+  game.roleEndsAt = null;
+  game.log.push({kind:'role',message:'1라운드 · 각 플레이어가 자신의 비밀 역할을 3초 동안 확인합니다.'});
 }
 
 /** Called by the server after the initial or between-round shuffle finishes. */
@@ -156,12 +166,24 @@ export function finishShuffle(game) {
   } else {
     game.log.push({kind:'round',message:'1라운드 시작 · 카드 섞기 완료!'});
   }
+  // Both the first round and all later rounds proceed to a private 5-second card check.
+  // Role reveal happens before the *first* shuffle and is never repeated.
   game.phase = 'reviewing';
   game.shuffleEndsAt = null;
-  game.reviewEndsAt = null; // Server starts the 5-second private inspection window.
+  game.roleEndsAt = null;
+  game.reviewEndsAt = null;
   game.claimEndsAt = null;
   game.players.forEach(p=>{p.claim = null;});
   game.log.push({kind:'review',message:`${game.round}라운드 카드 확인 · 각자 자신의 카드 구성을 5초 동안 확인합니다.`});
+}
+
+/** The 3-second role reveal is only shown on the initial round. */
+export function finishRoleReveal(game) {
+  if (game.phase !== 'role-reveal' || game.round !== 1) throw new Error('역할 공개 단계가 아닙니다.');
+  game.phase = 'shuffling';
+  game.roleEndsAt = null;
+  game.shuffleEndsAt = null;
+  game.log.push({kind:'round',message:'1라운드 시작 · 비밀 역할 확인 완료 → 카드를 3초 동안 섞습니다.'});
 }
 
 /** All players inspect their own five/four/three/two card faces for five seconds. */
@@ -211,7 +233,9 @@ export function publicGame(game, viewerId = null) {
   return {
     phase: game.phase,
     round: game.round,
+    darkEndsAt: game.phase === 'intro-dark' ? game.darkEndsAt : null,
     shuffleEndsAt: game.phase === 'shuffling' ? game.shuffleEndsAt : null,
+    roleEndsAt: game.phase === 'role-reveal' ? game.roleEndsAt : null,
     shuffleFromRound: game.shuffleFromRound,
     reviewEndsAt: game.phase === 'reviewing' ? game.reviewEndsAt : null,
     claimEndsAt: game.phase === 'declaring' ? game.claimEndsAt : null,
@@ -220,6 +244,10 @@ export function publicGame(game, viewerId = null) {
     currentId: game.currentId,
     playerCount: game.players.length,
     treasuresFound: game.revealed.filter((r) => r.type === 'treasure').length,
+    remainingTreasure: game.players.length - game.revealed.filter((r) => r.type === 'treasure').length,
+    // Public declarations, not the sum of real hidden hands.
+    declaredTreasure: game.players.reduce((sum,p) => sum + (Number.isInteger(p.claim) ? p.claim : 0),0),
+    declaredPlayers: game.players.filter(p => Number.isInteger(p.claim)).length,
     winner: game.winner,
     endReason: game.endReason,
     lastReveal: game.lastReveal,

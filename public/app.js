@@ -53,7 +53,7 @@ function connectEvents() {
       const data = JSON.parse(ev.data);
       const was = state.room?.game;
       state.room = data;
-      if (was?.phase === 'shuffling' && data.game?.phase === 'reviewing') {
+      if (was?.phase === 'role-reveal' && data.game?.phase === 'reviewing' || was?.phase === 'shuffling' && data.game?.phase === 'reviewing') {
         state.justDealt = true;
         setTimeout(() => { state.justDealt = false; render(); }, 950);
       }
@@ -196,6 +196,30 @@ function revealHistory(g) {
       </div>
     </section>`).join('')}</div>`;
 }
+function initialDarkOverlay() {
+  return `<div class="intro-dark-overlay" role="status" aria-live="polite" aria-label="첫 라운드를 준비하는 중">
+    <span class="intro-dark-small">THE VOYAGE BEGINS</span>
+    <h2>1라운드 시작</h2>
+    <p>잠시 후 당신의 역할을 공개합니다.</p>
+  </div>`;
+}
+function roleRevealOverlay(g) {
+  // g.mySecret is server-personalized. Never print any other player's role.
+  const role = g.mySecret?.role;
+  if (!role) return '';
+  const seconds = Math.max(0, Math.ceil(((g.roleEndsAt || Date.now()) - Date.now()) / 1000));
+  return `<div class="intro-role-overlay ${role === 'skeleton' ? 'intro-skeleton' : 'intro-crew'}" role="dialog" aria-modal="true" aria-label="나의 비밀 역할 공개">
+    <section class="intro-role-content">
+      <span class="intro-role-eyebrow">YOUR SECRET ROLE · 1 ROUND</span>
+      <span class="intro-role-symbol" aria-hidden="true">${role === 'skeleton' ? '☠' : '✦'}</span>
+      <p>당신은</p>
+      <h2>${role === 'skeleton' ? '스켈레톤' : '탐험대'}<small>입니다.</small></h2>
+      <p class="intro-role-hint">${role === 'skeleton' ? '크라켄을 깨우거나 보물 찾기를 방해하세요.' : '크라켄을 피하면서 보물을 모두 찾아보세요.'}</p>
+      <div class="intro-role-clock"><strong data-role-countdown>${seconds}</strong>초 후 카드를 섞습니다.</div>
+      <span class="intro-private-note">나에게만 공개되는 정보입니다</span>
+    </section>
+  </div>`;
+}
 function shuffleOverlay(g) {
   return `<div class="shuffle-overlay" role="status" aria-live="polite" aria-label="카드를 섞는 중">
     <div class="shuffle-minimal">
@@ -225,7 +249,7 @@ function reviewPanel(g) {
   return `<div class="review-overlay" role="dialog" aria-modal="true" aria-label="내 카드 확인 시간">
     <section class="review-modal">
       <div class="claim-kicker">ROUND ${String(g.round).padStart(2,'0')} · PRIVATE CARD REVIEW</div>
-      <h2>${g.round}라운드 <em>내 카드 확인</em></h2>
+      <h2><em>당신의 카드입니다.</em></h2>
       <p>다른 사람에게 보이지 않는 <strong>나만의 카드 구성</strong>이에요.<br/>5초 동안 종류별 개수를 기억하세요.</p>
       <div class="review-clock"><strong data-review-countdown>${seconds}</strong><small>초 남음</small></div>
       <div class="review-cards" role="list" aria-label="자신에게 배분된 카드 종류">
@@ -280,17 +304,19 @@ function gamePage() {
   const selectedOwner = g.players.find(p => p.id === pending?.targetId);
   return `${brand()}<main class="container state-page game-page ${state.justDealt ? 'dealt-in' : ''}"><div class="game-head"><div><span class="eyebrow">THE VOYAGE HAS BEGUN</span><h1>심해의 탐험</h1><p>보물을 찾아내되, 크라켄은 절대 깨우지 마세요.</p></div>
     <div class="round-track">${Array.from({length:4}, (_, i) => `<div class="round-step ${i + 1 === g.round ? 'current' : i + 1 < g.round ? 'done' : ''}"><b>${String(i+1).padStart(2,'0')}</b><small>ROUND</small></div>`).join('')}</div></div>
-    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>${g.phase === 'playing' ? '행동할 플레이어' : '현재 진행'}</small><strong>${g.phase === 'playing' ? `✳ ${safe(actor?.name)}` : g.phase === 'round-end' ? '◆ 공개 결과 확인' : g.phase === 'reviewing' ? '◇ 나의 카드 확인' : g.phase === 'declaring' ? '◆ 보물 개수 선언' : '↻ 카드 섞는 중'}</strong><span>${g.phase === 'shuffling' ? '남은 카드 재분배 중' : g.phase === 'reviewing' ? '비밀 카드 구성 확인 · 5초' : g.phase === 'declaring' ? '보물 개수 선언 중 · 5초' : g.phase === 'round-end' ? '마지막 공개 카드 확인 중' : myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
+    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat score-remaining"><small>남은 보물 개수</small><strong>${g.remainingTreasure}<em>개</em></strong><span>공개된 보물 제외 · 확정 수치</span></div><div class="score-stat score-declared"><small>선언된 보물 합계</small><strong>${g.declaredPlayers ? g.declaredTreasure : '—'}<em>${g.declaredPlayers ? '개' : ''}</em></strong><span>${g.declaredPlayers} / ${g.playerCount}명 선언 · 거짓말 가능</span></div><div class="score-stat score-round"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>${g.phase === 'playing' ? '행동할 플레이어' : '현재 진행'}</small><strong>${g.phase === 'playing' ? `✳ ${safe(actor?.name)}` : g.phase === 'round-end' ? '◆ 공개 결과 확인' : g.phase === 'intro-dark' ? '◆ 1라운드 시작' : g.phase === 'role-reveal' ? '✦ 나의 역할 공개' : g.phase === 'reviewing' ? '◇ 나의 카드 확인' : g.phase === 'declaring' ? '◆ 보물 개수 선언' : '↻ 카드 섞는 중'}</strong><span>${g.phase === 'intro-dark' ? '비밀 역할 공개를 준비 중 · 2초' : g.phase === 'shuffling' ? '카드를 섞는 중 · 3초' : g.phase === 'role-reveal' ? '비밀 역할 확인 · 3초' : g.phase === 'reviewing' ? '비밀 카드 구성 확인 · 5초' : g.phase === 'declaring' ? '보물 개수 선언 중 · 5초' : g.phase === 'round-end' ? '마지막 공개 카드 확인 중' : myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
     <div class="game-layout"><aside class="left-sidebar">${secretPanel(g)}<section class="panel history-panel"><div class="panel-heading"><div><span class="top-glyph">≋</span><strong>탐험 기록</strong></div></div><div class="history-rows">${g.log.slice().reverse().map((entry,i) => `<div class="history-item ${entry.kind === 'round' ? 'round-event' : ''}"><span>${entry.kind === 'treasure' ? '◆' : entry.kind === 'kraken' ? '✺' : entry.kind === 'round' ? '↻' : '◇'}</span><p>${safe(entry.message)}</p></div>`).join('')}</div></section></aside>
     <section class="table-area">${declarationAudit(g)}<div class="table-heading"><div><span class="eyebrow">THE CARD TABLE</span><h2>탐험 카드</h2></div><span>뒷면을 눌러 선택</span></div>
       <div class="hands-grid">${g.players.map((p,i)=>playerHand(p,i,g)).join('')}</div>
-      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${g.phase === 'shuffling' ? '✦ 카드를 섞고 있습니다' : g.phase === 'reviewing' ? '✦ 자신의 카드를 5초 동안 확인하세요' : g.phase === 'declaring' ? '✦ 보물 개수 선언 중입니다' : g.phase === 'round-end' ? '✦ 마지막 공개 카드를 확인하세요' : myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
+      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${g.phase === 'intro-dark' ? '✦ 항해가 시작됩니다' : g.phase === 'shuffling' ? '✦ 카드를 섞고 있습니다' : g.phase === 'role-reveal' ? '✦ 자신의 비밀 역할을 확인하세요' : g.phase === 'reviewing' ? '✦ 자신의 카드를 5초 동안 확인하세요' : g.phase === 'declaring' ? '✦ 보물 개수 선언 중입니다' : g.phase === 'round-end' ? '✦ 마지막 공개 카드를 확인하세요' : myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
       <section class="panel reveal-panel"><div class="panel-heading"><div><span class="top-glyph">◆</span><strong>공개된 카드</strong></div><span>${g.revealed.length}장 발견</span></div>
         ${revealSpotlight(g)}${revealHistory(g)}
       </section>
     </section><aside class="right-sidebar">${chatPanel()}<div class="sidebar-hint"><span>✧</span> 기억하세요. 자신의 손패에 보물이 있다는 말조차 거짓말일 수 있습니다.</div></aside></div>
     <footer class="site-footer">NO ONE KNOWS WHERE THE KRAKEN SLEEPS <span>${state.connection}</span></footer>
+    ${g.phase === 'intro-dark' ? initialDarkOverlay() : ''}
     ${g.phase === 'shuffling' ? shuffleOverlay(g) : ''}
+    ${g.phase === 'role-reveal' ? roleRevealOverlay(g) : ''}
     ${g.phase === 'reviewing' ? reviewPanel(g) : ''}
     ${g.phase === 'declaring' ? declarationPanel(g) : ''}
   </main>`;
@@ -435,6 +461,9 @@ const clockInterval=setInterval(() => {
   const timer = document.querySelector('[data-claim-countdown]');
   const deadline = game()?.claimEndsAt;
   if (timer && deadline) timer.textContent = Math.max(0,Math.ceil((deadline-Date.now())/1000));
+  const role = document.querySelector('[data-role-countdown]');
+  const roleDeadline = game()?.roleEndsAt;
+  if (role && roleDeadline) role.textContent = Math.max(0,Math.ceil((roleDeadline-Date.now())/1000));
   const review = document.querySelector('[data-review-countdown]');
   const reviewDeadline = game()?.reviewEndsAt;
   if (review && reviewDeadline) review.textContent = Math.max(0,Math.ceil((reviewDeadline-Date.now())/1000));
