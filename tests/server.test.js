@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../server.js';
 
-const server = createServer({shuffleDelayMs:35,claimDelayMs:110,revealDelayMs:75});
+const server = createServer({shuffleDelayMs:35,reviewDelayMs:70,claimDelayMs:110,revealDelayMs:75});
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const request = async (action, data={}) => {
@@ -39,6 +39,12 @@ test('실시간 온라인 플레이: 생성·입장·준비·시작·선택·채
     assert.equal((await request('start',sessions[0])).status,200);
     let state=(await request('resume',sessions[0])).state;
     assert.equal(state.game.phase,'shuffling');
+    assert.equal((await request('pick',{...sessions[0],targetId:state.game.players[1].id,cardId:state.game.players[1].cards[0]})).status,409);
+    await new Promise(r=>setTimeout(r,80));
+    state=(await request('resume',sessions[0])).state;
+    assert.equal(state.game.phase,'reviewing');
+    assert.ok(state.game.reviewEndsAt>Date.now());
+    assert.equal((await request('declare',{...sessions[0],number:0})).status,409);
     assert.equal((await request('pick',{...sessions[0],targetId:state.game.players[1].id,cardId:state.game.players[1].cards[0]})).status,409);
     await new Promise(r=>setTimeout(r,80));
     state=(await request('resume',sessions[0])).state;

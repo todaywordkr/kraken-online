@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, publicGame, selectCard, finishShuffle,finishDeclarations,finishRoundReveal,declareTreasure } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, finishShuffle,finishReview,finishDeclarations,finishRoundReveal,declareTreasure } from '../public/game-core.js';
 
 // Lightweight DOM harness: validate browser-facing templates without installing dependencies.
 test('채팅 질문 버튼·라운드 배지·페이드 로더가 실제 앱 템플릿에서 렌더링된다', async () => {
   const roster = Array.from({length:4},(_,i)=>({id:`p${i}`,name:i?`AI 테스터${i}`:'사람',bot:i>0,difficulty:'normal'}));
-  const game=newGame(roster);finishShuffle(game);finishDeclarations(game);
+  const game=newGame(roster);finishShuffle(game);finishReview(game);finishDeclarations(game);
   const session={code:'TEST12',token:'test-token',name:'사람'};
   const room=()=>({
     code:session.code, myId:roster[0].id,hostId:roster[0].id,
@@ -54,6 +54,12 @@ test('채팅 질문 버튼·라운드 배지·페이드 로더가 실제 앱 템
   assert.match(root.innerHTML,/카드 섞는 중/);
   assert.doesNotMatch(root.innerHTML,/shuffle-deck/);
   finishShuffle(game);
+  stream.onmessage({data:JSON.stringify(room())});
+  assert.match(root.innerHTML,/내 카드 확인/);
+  assert.match(root.innerHTML,/data-review-countdown/);
+  assert.match(root.innerHTML,/review-card/);
+  assert.doesNotMatch(root.innerHTML,/data-action=\"declare-treasure\"/);
+  finishReview(game);
   stream.onmessage({data:JSON.stringify(room())});
   assert.match(root.innerHTML,/data-action=\"declare-treasure\"/);
   assert.match(root.innerHTML,/보물 선언/);

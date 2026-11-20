@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from '../server.js';
 import { classifyCardQuestion, createBotStance, botSpeak } from '../bot-ai.js';
-import { newGame, publicGame, selectCard, finishShuffle,finishDeclarations,finishRoundReveal } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, finishShuffle,finishReview,finishDeclarations,finishRoundReveal } from '../public/game-core.js';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const roster = Array.from({length:4},(_,i)=>({ id:`p${i}`,name:`선원${i}` }));
@@ -16,17 +16,17 @@ test('카드 질문 구분, 주장 일관성, 크라켄의 전략적 답변', ()
     mySecret:{role:'skeleton',counts:{empty:3,treasure:0,kraken:1}},revealed:[],
   };
   const stance = createBotStance(view, 'hard', ()=>0);
-  assert.equal(stance.treasureClaim,1); // A hard skeleton may entice crew with a false treasure count.
+  assert.equal(stance.treasureClaim,2); // A hard skeleton may entice crew with a false treasure count.
   assert.equal(stance.krakenClaim,false); // It may deny its Kraken to invite an attack.
   const a = botSpeak(view,[], 'hard', {type:'reply',text:'보물 몇 개야?',stance},()=>0);
   const b = botSpeak(view,[], 'hard', {type:'reply',text:'크라켄 있어?',stance},()=>0);
-  assert.match(a,/보물 1개/);
+  assert.match(a,/보물 2개/);
   assert.match(b,/크라켄.*없/);
-  assert.match(botSpeak(view,[], 'hard', {type:'reply',text:'보물 몇 개야?',stance},()=>0),/1개/);
+  assert.match(botSpeak(view,[], 'hard', {type:'reply',text:'보물 몇 개야?',stance},()=>0),/2개/);
 });
 
 test('탐험 기록에 이전 라운드 종료와 다음 라운드 시작이 합쳐서 남는다',()=>{
-  const g = newGame(roster);finishShuffle(g);finishDeclarations(g);
+  const g = newGame(roster);finishShuffle(g);finishReview(g);finishDeclarations(g);
   for (let i=0;i<4;i++) {
     const target = g.players.find(p=>p.id!==g.currentId && p.hand.some(c=>c.type==='empty'));
     selectCard(g,g.currentId,target.id,target.hand.find(c=>c.type==='empty').id);
@@ -36,7 +36,7 @@ test('탐험 기록에 이전 라운드 종료와 다음 라운드 시작이 합
   assert.ok(g.log.some(x=>x.message.includes('1라운드 종료 → 2라운드 시작')));
 });
 
-const server=createServer({botDelayMs:100_000,replyDelayMs:400,shuffleDelayMs:40,claimDelayMs:75,revealDelayMs:70});
+const server=createServer({botDelayMs:100_000,replyDelayMs:400,shuffleDelayMs:40,reviewDelayMs:40,claimDelayMs:75,revealDelayMs:70});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`;
 const api=async (action,data={})=>{

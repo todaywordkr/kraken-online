@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishRoundReveal, finishDeclarations, declareTreasure, maxTreasureClaim, ROLE_COUNTS } from '../public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishReview, finishRoundReveal, finishDeclarations, declareTreasure, maxTreasureClaim, ROLE_COUNTS } from '../public/game-core.js';
 
 const roster = n => Array.from({length:n}, (_,i)=>({id:`player-${i}`,name:`항해사 ${i+1}`}));
-const begin = game=>{finishShuffle(game);finishDeclarations(game);return game};
+const begin = game=>{finishShuffle(game);finishReview(game);finishDeclarations(game);return game};
 const count = (game, kind) => game.players.flatMap(p=>p.hand).filter(c=>c.type===kind).length + game.revealed.filter(c=>c.type===kind).length;
 
 test('4~8명별 카드 수, 비밀 역할 수, 손패 배분', () => {
@@ -70,8 +70,9 @@ test('한 라운드에 인원수만큼 공개 시 다시 섞어 인당 4장을 �
   finishShuffle(g);
   assert.equal(g.round,2);
   assert.equal(g.actionInRound,0);
-  assert.equal(g.phase,'declaring');
+  assert.equal(g.phase,'reviewing');
   assert.ok(g.players.every(p=>p.hand.length===4));
+  finishReview(g);
   finishDeclarations(g);
   assert.equal(g.phase,'playing');
   assert.throws(() => finishShuffle(g), /차례/);
@@ -120,6 +121,9 @@ test('5초 선언: 개인별 0~최대 보물, 중복 선택 차단, 무응답이
   assert.equal(g.phase,'shuffling');
   assert.throws(()=>selectCard(g,g.currentId,g.players[1].id,g.players[1].hand[0].id),/진행 중/);
   finishShuffle(g);
+  assert.equal(g.phase,'reviewing');
+  assert.throws(()=>declareTreasure(g,g.players[0].id,0),/선언/);
+  finishReview(g);
   assert.equal(g.phase,'declaring');
   const first=g.players[0];
   assert.equal(maxTreasureClaim(g,first.id),5);
@@ -146,6 +150,8 @@ test('다음 라운드에서 공개된 보물을 제외하고 선택 가능 상�
   assert.equal(g.revealed.length,4);
   assert.equal(g.lastReveal.round,1);
   finishRoundReveal(g); finishShuffle(g);
+  assert.equal(g.phase,'reviewing');
+  finishReview(g);
   assert.equal(g.phase,'declaring');
   assert.equal(g.round,2);
   assert.equal(maxTreasureClaim(g,g.players[0].id),4);
