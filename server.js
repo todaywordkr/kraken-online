@@ -4,7 +4,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newGame, publicGame, selectCard, markCard, clearMark } from './public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle } from './public/game-core.js';
 import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply } from './bot-ai.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -16,6 +16,7 @@ const staticFiles = {
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/style.css': ['style.css', 'text/css; charset=utf-8'],
   '/game-core.js': ['game-core.js', 'text/javascript; charset=utf-8'],
+  '/display-utils.js': ['display-utils.js', 'text/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
 };
 const code = () => Array.from({length: 6}, () => CODE_CHARS[randomInt(CODE_CHARS.length)]).join('');
@@ -72,8 +73,8 @@ function removePlayer(room, person) {
 const BOT_NAMES = ['루나', '코랄', '네모', '파도', '닻별', '해초', '진주', '푸른눈', '소금', '아쿠아'];
 const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
 function clearRoomTimers(room) {
-  clearTimeout(room.botTimer); clearTimeout(room.replyTimer);
-  room.botTimer = null; room.replyTimer = null;
+  clearTimeout(room.botTimer); clearTimeout(room.replyTimer); clearTimeout(room.shuffleTimer);
+  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null;
 }
 function addBot(room, difficulty) {
   if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
@@ -98,6 +99,23 @@ function sendBotIntro(room, contextType) {
     botMessage(room, bot, botSpeak(gameViewForBot(room,bot), room.messages, bot.difficulty, { type: contextType }));
   }
 }
+function scheduleShuffle(room) {
+  if (room.game?.phase !== 'shuffling' || room.shuffleTimer) return;
+  const delay = Math.max(25, room.shuffleDelayMs ?? 2700);
+  const game = room.game;
+  game.shuffleEndsAt = Date.now() + delay;
+  notify(room);
+  room.shuffleTimer = setTimeout(() => {
+    room.shuffleTimer = null;
+    if (room.game !== game || game.phase !== 'shuffling') return;
+    try {
+      finishShuffle(game);
+      notify(room);
+      sendBotIntro(room, 'round');
+      scheduleBotTurn(room);
+    } catch (error) { console.error('라운드 재분배 실패', error); }
+  }, delay);
+}
 function scheduleBotTurn(room) {
   clearTimeout(room.botTimer); room.botTimer = null;
   if (!room.game || room.game.phase !== 'playing') return;
@@ -115,11 +133,9 @@ function scheduleBotTurn(room) {
       room.botTimer = setTimeout(() => {
         if (!room.game || room.game.phase !== 'playing' || room.game.currentId !== currentId) return;
         try {
-          const previousRound = room.game.round;
           selectCard(room.game,bot.id,decision.targetId,decision.cardId);
-          notify(room);
-          if (room.game.phase === 'playing' && room.game.round !== previousRound) sendBotIntro(room,'round');
-          scheduleBotTurn(room);
+          if (room.game.phase === 'shuffling') scheduleShuffle(room);
+          else { notify(room); scheduleBotTurn(room); }
         } catch (e) { console.error('AI 카드 공개 실패', e); scheduleBotTurn(room); }
       }, Math.max(30, Math.min(1100, Math.floor(delay * 0.55))));
     } catch (e) { console.error('AI 선택 실패', e); }
@@ -156,7 +172,7 @@ async function api(action, data, options = {}) {
   if (action === 'create') {
     const name = cleanName(data.name);
     if (!name) throw err(400, '닉네임을 입력해주세요.');
-    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, botDelayMs: options.botDelayMs };
+    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, shuffleTimer: null, botDelayMs: options.botDelayMs, shuffleDelayMs: options.shuffleDelayMs };
     rooms.set(room.code, room);
     const person = addPlayer(room, name);
     person.ready = true;
@@ -221,12 +237,10 @@ async function api(action, data, options = {}) {
   if (action === 'pick') {
     if (!room.game) throw err(409, '진행 중인 게임이 아닙니다.');
     if (typeof data.targetId !== 'string' || typeof data.cardId !== 'string') throw err(400, '잘못된 카드 선택입니다.');
-    const priorRound = room.game.round;
     try { selectCard(room.game, person.id, data.targetId, data.cardId); }
     catch (e) { throw err(409, e.message); }
-    notify(room);
-    if (room.game.phase === 'playing' && room.game.round !== priorRound) sendBotIntro(room,'round');
-    scheduleBotTurn(room);
+    if (room.game.phase === 'shuffling') scheduleShuffle(room);
+    else { notify(room); scheduleBotTurn(room); }
     return {};
   }
   if (action === 'chat') {
