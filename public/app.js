@@ -1,3 +1,4 @@
+import { formatBotChat, groupedReveals } from './display-utils.js';
 const root = document.querySelector('#app');
 const params = new URLSearchParams(location.search);
 const initialCode = (params.get('room') || '').trim().toUpperCase();
@@ -10,7 +11,7 @@ const saved = (() => { try { return JSON.parse(sessionStorage.getItem('kraken-on
 const state = {
   room: null, session: saved, nickname: localStorage.getItem('kraken-online-name') || saved?.name || '',
   joinCode: initialCode, tab: initialCode ? 'join' : 'create', connection: '연결 준비',
-  selected: null, showSecret: false, showRules: false, chatDraft: '', notice: '', busy: false, botDifficulty: 'normal',
+  selected: null, showSecret: false, showRules: false, chatDraft: '', notice: '', busy: false, botDifficulty: 'normal', justDealt: false,
 };
 let events = null;
 let noticeTimer = null;
@@ -52,6 +53,10 @@ function connectEvents() {
       const data = JSON.parse(ev.data);
       const was = state.room?.game;
       state.room = data;
+      if (was?.phase === 'shuffling' && data.game?.phase === 'playing') {
+        state.justDealt = true;
+        setTimeout(() => { state.justDealt = false; render(); }, 950);
+      }
       if (was && data.game && (was.round !== data.game.round || was.revealed.length !== data.game.revealed.length)) {
         state.selected = null;
       }
@@ -126,7 +131,7 @@ function playerBadge(p, idx) {
 function chatPanel() {
   const messages = state.room?.messages || [];
   return `<section class="panel chat-panel"><div class="panel-heading"><div><span class="top-glyph">☷</span><strong>선상 대화</strong></div><span class="live-pill">● LIVE</span></div>
-    <div class="chat-messages" id="chat-messages">${messages.length ? messages.map(message => `<div class="message ${message.playerId === me() ? 'mine' : ''}"><small>${safe(message.name)} ${message.bot ? '<span class="ai-tag">AI</span>' : ''}</small><div>${safe(message.text)}</div></div>`).join('') : `<p class="chat-empty">누가 진실을 말하고 있을까요?<br/>채팅이나 음성 통화로 자유롭게 토론해 보세요.</p>`}</div>
+    <div class="chat-messages" id="chat-messages">${messages.length ? messages.map(message => `<div class="message ${message.playerId === me() ? 'mine' : ''}"><small>${safe(message.name)} ${message.bot ? '<span class="ai-tag">AI</span>' : ''}</small><div>${message.bot ? formatBotChat(message.text) : safe(message.text)}</div></div>`).join('') : `<p class="chat-empty">누가 진실을 말하고 있을까요?<br/>채팅이나 음성 통화로 자유롭게 토론해 보세요.</p>`}</div>
     <form id="chat-form" class="chat-input"><input data-field="chatDraft" maxlength="180" value="${safe(state.chatDraft)}" placeholder="메시지를 입력하세요..." aria-label="채팅 메시지" /><button type="submit" aria-label="메시지 전송">➤</button></form>
   </section>`;
 }
@@ -169,6 +174,27 @@ function playerHand(p, index, g) {
       return `<button type="button" class="back-card ${canPick ? 'clickable' : ''} ${selected ? 'selected' : ''}" data-action="pick" data-target="${safe(p.id)}" data-card="${safe(cardId)}" ${canPick ? '' : 'disabled'} aria-label="${safe(p.name)}의 ${j+1}번 카드"><span>✺</span><small>${String(j+1).padStart(2,'0')}</small></button>`;
     }).join('') : '<span class="no-cards">남은 카드 없음</span>'}</div></section>`;
 }
+function revealHistory(g) {
+  return `<div class="round-history" aria-label="라운드별 공개 카드 기록">${groupedReveals(g.revealed, g.round, g.playerCount).map(row => `
+    <section class="reveal-round" aria-label="${row.round}라운드 공개 카드">
+      <div class="reveal-round-head"><strong>${row.round}라운드</strong><span>${row.cards.length} / ${g.playerCount}장 공개</span></div>
+      <div class="reveal-grid" style="--round-cols:${g.playerCount}" role="list">
+        ${row.slots.map((r, i) => r ? `<div role="listitem" class="reveal-card ${r.type}" title="${safe(r.ownerName)} · ${r.round}라운드 ${i+1}번째 공개"><span>${icons[r.type]}</span><small>${safe(r.ownerName)}</small></div>` : `<div role="listitem" class="reveal-card reveal-slot" aria-label="미공개 카드 자리 ${i+1}"><span>?</span><small>${String(i+1).padStart(2, '0')}</small></div>`).join('')}
+      </div>
+    </section>`).join('')}</div>`;
+}
+function shuffleOverlay(g) {
+  return `<div class="shuffle-overlay" role="status" aria-live="polite" aria-label="카드를 다시 섞는 중">
+    <div class="shuffle-scene">
+      <div class="shuffle-eyebrow">ROUND TRANSITION · ${String(g.round).padStart(2,'0')} → ${String(g.round+1).padStart(2,'0')}</div>
+      <h2><span>${g.round}라운드 종료</span><b>→</b><span>${g.round+1}라운드 시작</span></h2>
+      <p>공개된 카드는 제외하고, 남은 카드를 섞어 다시 나눕니다.</p>
+      <div class="shuffle-deck" aria-hidden="true"><div class="shuffle-card shuffle-card-a">✺</div><div class="shuffle-card shuffle-card-b">✺</div><div class="shuffle-card shuffle-card-c">✺</div><div class="shuffle-card shuffle-card-d">✺</div><div class="shuffle-glow"></div></div>
+      <strong class="shuffle-loading">카드 섞는 중<span> · · ·</span></strong>
+      <div class="shuffle-progress" aria-hidden="true"><span></span></div>
+    </div>
+  </div>`;
+}
 function gamePage() {
   const g = game();
   if (g.phase === 'finished') return finishPage();
@@ -176,18 +202,19 @@ function gamePage() {
   const turnCount = g.revealed.filter(p => p.round === g.round).length;
   const pending = g.pending || state.selected;
   const selectedOwner = g.players.find(p => p.id === pending?.targetId);
-  return `${brand()}<main class="container state-page"><div class="game-head"><div><span class="eyebrow">THE VOYAGE HAS BEGUN</span><h1>심해의 탐험</h1><p>보물을 찾아내되, 크라켄은 절대 깨우지 마세요.</p></div>
+  return `${brand()}<main class="container state-page game-page ${state.justDealt ? 'dealt-in' : ''}"><div class="game-head"><div><span class="eyebrow">THE VOYAGE HAS BEGUN</span><h1>심해의 탐험</h1><p>보물을 찾아내되, 크라켄은 절대 깨우지 마세요.</p></div>
     <div class="round-track">${Array.from({length:4}, (_, i) => `<div class="round-step ${i + 1 === g.round ? 'current' : i + 1 < g.round ? 'done' : ''}"><b>${String(i+1).padStart(2,'0')}</b><small>ROUND</small></div>`).join('')}</div></div>
-    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>행동할 플레이어</small><strong>✳ ${safe(actor?.name)}</strong><span>${myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
+    <div class="score-strip"><div class="score-treasure"><small>발견한 보물</small><div class="mini-gems">${Array.from({length:g.playerCount}, (_,i)=>`<span class="${i < g.treasuresFound ? 'found' : ''}">${i < g.treasuresFound ? '◆' : '◇'}</span>`).join('')}</div><b>${g.treasuresFound}<em> / ${g.playerCount}</em></b></div><div class="score-stat"><small>이번 라운드</small><strong>${turnCount}<em> / ${g.playerCount}장</em></strong></div><div class="score-actor"><small>행동할 플레이어</small><strong>✳ ${safe(actor?.name)}</strong><span>${g.phase === 'shuffling' ? '남은 카드 재분배 중' : myTurn() ? '다른 사람의 카드 한 장을 선택하세요' : actor?.bot ? 'AI가 카드를 분석 중입니다' : '선택을 기다리는 중입니다'}</span></div></div>
     <div class="game-layout"><aside class="left-sidebar">${secretPanel(g)}<section class="panel history-panel"><div class="panel-heading"><div><span class="top-glyph">≋</span><strong>탐험 기록</strong></div></div><div class="history-rows">${g.log.slice().reverse().slice(0,10).map((entry,i) => `<div class="history-item"><span>${entry.kind === 'treasure' ? '◆' : entry.kind === 'kraken' ? '✺' : '◇'}</span><p>${safe(entry.message)}</p></div>`).join('')}</div></section></aside>
     <section class="table-area"><div class="table-heading"><div><span class="eyebrow">THE CARD TABLE</span><h2>탐험 카드</h2></div><span>뒷면을 눌러 선택</span></div>
       <div class="hands-grid">${g.players.map((p,i)=>playerHand(p,i,g)).join('')}</div>
-      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
+      <div class="action-bar ${myTurn() ? 'your-turn' : ''}"><div><strong>${g.phase === 'shuffling' ? '✦ 카드를 섞고 있습니다' : myTurn() ? '✦ 당신의 차례입니다' : g.pending ? `${safe(actor?.name)}님이 카드를 지목했습니다` : `${safe(actor?.name)}님의 선택을 기다리는 중`}</strong><small>자신의 카드는 선택할 수 없습니다. 거짓말과 토론은 자유!</small></div>${myTurn() && pending ? `<div class="confirm"><span>${safe(selectedOwner?.name)}님의 카드 선택</span><button class="outline-btn" data-action="cancel-pick">취소</button><button class="primary-btn" data-action="confirm-pick">카드 공개하기 ↗</button></div>` : ''}</div>
       <section class="panel reveal-panel"><div class="panel-heading"><div><span class="top-glyph">◆</span><strong>공개된 카드</strong></div><span>${g.revealed.length}장 발견</span></div>
-        <div class="reveal-row">${g.revealed.length ? g.revealed.map(r=>`<div class="reveal-card ${r.type}" title="${safe(r.ownerName)} · ${r.round}라운드"><span>${icons[r.type]}</span><small>${safe(r.ownerName)}</small></div>`).join('') : '<p class="reveal-empty">아직 아무 카드도 공개되지 않았습니다.</p>'}</div>
+        ${revealHistory(g)}
       </section>
     </section><aside class="right-sidebar">${chatPanel()}<div class="sidebar-hint"><span>✧</span> 기억하세요. 자신의 손패에 보물이 있다는 말조차 거짓말일 수 있습니다.</div></aside></div>
     <footer class="site-footer">NO ONE KNOWS WHERE THE KRAKEN SLEEPS <span>${state.connection}</span></footer>
+    ${g.phase === 'shuffling' ? shuffleOverlay(g) : ''}
   </main>`;
 }
 function finishPage() {
@@ -197,6 +224,7 @@ function finishPage() {
     <h1>${crewWin ? '보물을 모두 찾았습니다!' : '크라켄의 그림자가 드리웠다'}</h1><h2>${crewWin ? '탐험대 승리' : '스켈레톤 승리'}</h2><p>${safe(g.endReason)}</p>
     <div class="result-stats"><div><small>찾은 보물</small><strong>${g.treasuresFound} / ${g.playerCount}</strong></div><div><small>진행한 라운드</small><strong>${g.round} / 4</strong></div><div><small>공개 카드</small><strong>${g.revealed.length}장</strong></div></div>
     <section class="panel result-roster"><div class="panel-heading"><strong>모든 플레이어의 정체</strong><span>REVEALED</span></div><div class="result-grid">${g.players.map((p,i)=>`<div class="result-person">${playerBadge(p,i)}<div><strong>${safe(p.name)} ${p.bot ? '<span class="ai-tag">AI</span>' : ''}</strong><small class="${p.role === 'crew' ? 'crew-label' : 'enemy-label'}">${p.role === 'crew' ? '✦' : '☠'} ${roleText(p.role)}</small></div></div>`).join('')}</div></section>
+    <section class="panel reveal-panel result-history"><div class="panel-heading"><strong>라운드별 공개 카드 기록</strong><span>${g.revealed.length}장</span></div>${revealHistory(g)}</section>
     ${host() ? '<button class="primary-btn result-btn" data-action="restart">같은 방에서 다시 플레이 ↗</button>' : '<div class="result-wait">방장이 재시작하면 같은 방에서 다시 플레이할 수 있습니다.</div>'}
     <button class="exit-link" data-action="exit-result">첫 화면으로 돌아가기</button>
   </main>`;

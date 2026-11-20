@@ -60,7 +60,7 @@ export function newGame(roster) {
     phase: 'playing', round: 1, actionInRound: 0, nextCardId: 1,
     players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [] })),
     currentId: roster[randomInt(count)].id,
-    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [],
+    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null,
   };
   deal(game, [
     ...Array(4 * count - 1).fill('empty'),
@@ -122,14 +122,28 @@ export function selectCard(game, actorId, targetId, cardId) {
       game.endReason = '4라운드가 끝날 때까지 보물을 모두 찾지 못했습니다.';
       game.phase = 'finished';
     } else {
-      const remaining = game.players.flatMap((p) => p.hand.map((c) => c.type));
-      game.round++;
-      game.actionInRound = 0;
-      deal(game, remaining);
-      game.log.push({ kind: 'round', message: `${game.round}라운드 시작! 남은 카드를 다시 섞어 배분했습니다.` });
+      // The server deliberately pauses here, so every online player sees the
+      // same round-end animation before a new hand is dealt.
+      game.phase = 'shuffling';
+      game.log.push({ kind: 'round', message: `${game.round}라운드 종료! 남은 카드만 다시 섞고 있습니다.` });
     }
   }
   return reveal;
+}
+
+/** Called by the server after the visible shuffle transition completes. */
+export function finishShuffle(game) {
+  if (game.phase !== 'shuffling' || game.round >= MAX_ROUNDS) {
+    throw new Error('카드를 다시 섞을 차례가 아닙니다.');
+  }
+  // Revealed cards do not return to the deck.
+  const remaining = game.players.flatMap((p) => p.hand.map((c) => c.type));
+  game.round++;
+  game.actionInRound = 0;
+  deal(game, remaining);
+  game.phase = 'playing';
+  game.shuffleEndsAt = null;
+  game.log.push({ kind: 'round', message: `${game.round}라운드 시작! 남은 카드를 섞어 다시 나눴습니다.` });
 }
 
 /** The only safe object to emit to a given online player. */
@@ -140,6 +154,7 @@ export function publicGame(game, viewerId = null) {
   return {
     phase: game.phase,
     round: game.round,
+    shuffleEndsAt: game.phase === 'shuffling' ? game.shuffleEndsAt : null,
     actionInRound: game.actionInRound,
     currentId: game.currentId,
     playerCount: game.players.length,
