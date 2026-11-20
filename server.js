@@ -4,8 +4,8 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle } from './public/game-core.js';
-import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply } from './bot-ai.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
+import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply, createBotStance, classifyCardQuestion } from './bot-ai.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const rooms = new Map();
@@ -74,14 +74,15 @@ const BOT_NAMES = ['루나', '코랄', '네모', '파도', '닻별', '해초', '
 const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
 function clearRoomTimers(room) {
   clearTimeout(room.botTimer); clearTimeout(room.replyTimer); clearTimeout(room.shuffleTimer);
-  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null;
+  clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer);
+  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.replyQueue = [];
 }
 function addBot(room, difficulty) {
   if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
   if (!VALID_DIFFICULTIES.has(difficulty)) throw err(400, 'AI 난이도는 쉬움, 보통, 어려움 중 하나여야 합니다.');
   const available = BOT_NAMES.find(name => !room.players.some(p => p.name === `AI ${name}`));
   const name = available ? `AI ${available}` : `AI ${room.players.length + 1}`;
-  room.players.push({ id: uid(), name, bot: true, difficulty, token: null, ready: true, streams: new Set(), lastChat: 0 });
+  room.players.push({ id: uid(), name, bot: true, difficulty, token: null, ready: true, streams: new Set(), lastChat: 0, stance: null });
 }
 function botMessage(room, bot, textValue) {
   if (!textValue || !room.game) return;
@@ -90,18 +91,61 @@ function botMessage(room, bot, textValue) {
   notify(room);
 }
 function gameViewForBot(room, bot) { return publicGame(room.game, bot.id); }
+function botContext(room, bot, context) {
+  const currentReveals = room.game.revealed.filter(r => r.round === room.game.round && r.ownerId === bot.id && r.type === 'treasure').length;
+  if (bot.stance?.round !== room.game.round) {
+    bot.stance = { ...createBotStance(gameViewForBot(room,bot), bot.difficulty), revealedTreasuresAtCreation: currentReveals };
+  }
+  // A card actually found since the claim was made is no longer in that bot's hand.
+  const newlyDisclosed = currentReveals - bot.stance.revealedTreasuresAtCreation;
+  return { ...context, stance: { ...bot.stance, treasureClaim: Math.max(0, bot.stance.treasureClaim - newlyDisclosed) } };
+}
+function systemMessage(room, content, round) {
+  room.messages.push({ id: uid(), kind: 'system', name: '항해 안내', text: content, round });
+  room.messages = room.messages.slice(-70);
+  notify(room);
+}
 function sendBotIntro(room, contextType) {
   const list = room.players.filter(p=>p.bot);
   if (!list.length || !room.game || room.game.phase !== 'playing') return;
   // Avoid flooding a room of 7 bots with claims all at once.
   const speakers = list.slice(0, Math.min(2, list.length));
   for (const bot of speakers) {
-    botMessage(room, bot, botSpeak(gameViewForBot(room,bot), room.messages, bot.difficulty, { type: contextType }));
+    botMessage(room, bot, botSpeak(gameViewForBot(room,bot), room.messages, bot.difficulty, botContext(room, bot, { type: contextType })));
   }
+}
+function scheduleDeclarations(room) {
+  const game = room.game;
+  if (game?.phase !== 'declaring' || room.claimTimer) return;
+  const delay = Math.max(50, room.claimDelayMs ?? 5000); // 5 seconds in production.
+  game.claimEndsAt = Date.now() + delay;
+  notify(room);
+  room.botClaimTimer = setTimeout(() => {
+    room.botClaimTimer = null;
+    if (room.game !== game || game.phase !== 'declaring') return;
+    for (const bot of room.players.filter(p=>p.bot)) {
+      const bview = gameViewForBot(room,bot);
+      const stance = createBotStance(bview,bot.difficulty);
+      const claim = Math.max(0,Math.min(maxTreasureClaim(game,bot.id),stance.treasureClaim));
+      bot.stance = {...stance,treasureClaim:claim,revealedTreasuresAtCreation:0};
+      try { declareTreasure(game,bot.id,claim); } catch (e) { console.error('AI 보물 선언 실패',e); }
+    }
+    notify(room);
+  }, Math.max(20,Math.min(650,Math.floor(delay/3))));
+  room.claimTimer = setTimeout(() => {
+    room.claimTimer = null;
+    clearTimeout(room.botClaimTimer);room.botClaimTimer = null;
+    if (room.game !== game || game.phase !== 'declaring') return;
+    finishDeclarations(game); // Humans who skipped get their true treasure count.
+    systemMessage(room, `${game.round}라운드 보물 선언 완료 · ${game.players.find(p=>p.id===game.currentId)?.name}님부터 카드 선택!`,game.round);
+    sendBotIntro(room,'round');
+    notify(room);
+    scheduleBotTurn(room);
+  }, delay);
 }
 function scheduleShuffle(room) {
   if (room.game?.phase !== 'shuffling' || room.shuffleTimer) return;
-  const delay = Math.max(25, room.shuffleDelayMs ?? 2700);
+  const delay = Math.max(25, room.shuffleDelayMs ?? 1650);
   const game = room.game;
   game.shuffleEndsAt = Date.now() + delay;
   notify(room);
@@ -110,11 +154,26 @@ function scheduleShuffle(room) {
     if (room.game !== game || game.phase !== 'shuffling') return;
     try {
       finishShuffle(game);
-      notify(room);
-      sendBotIntro(room, 'round');
-      scheduleBotTurn(room);
-    } catch (error) { console.error('라운드 재분배 실패', error); }
-  }, delay);
+      systemMessage(room, `${game.round}라운드 카드 재배분 완료 · 5초 동안 보물 개수를 선언하세요.`,game.round);
+      scheduleDeclarations(room);
+    } catch (error) { console.error('라운드 재분배 실패',error); }
+  },delay);
+}
+function scheduleRoundEnd(room) {
+  if (room.game?.phase !== 'round-end' || room.revealTimer) return;
+  const delay = Math.max(70,room.revealDelayMs ?? 2700);
+  const game = room.game;
+  game.roundEndAt = Date.now()+delay;
+  notify(room); // Reveal the final card to everyone BEFORE transition.
+  room.revealTimer = setTimeout(() => {
+    room.revealTimer = null;
+    if (room.game !== game || game.phase !== 'round-end') return;
+    finishRoundReveal(game);
+    if (game.phase === 'shuffling') {
+      systemMessage(room,`${game.round}라운드 종료 → ${game.round+1}라운드 준비 · 남은 카드 섞는 중`,game.round);
+      scheduleShuffle(room);
+    } else { systemMessage(room,`${game.round}라운드 종료 · ${game.winner==='crew'?'탐험대':'스켈레톤'} 승리!`,game.round); notify(room); }
+  },delay);
 }
 function scheduleBotTurn(room) {
   clearTimeout(room.botTimer); room.botTimer = null;
@@ -128,32 +187,57 @@ function scheduleBotTurn(room) {
     try {
       const decision = chooseBotMove(gameViewForBot(room,bot),room.messages,bot.difficulty);
       markCard(room.game,bot.id,decision.targetId,decision.cardId);
-      if (Math.random() < 0.85) botMessage(room,bot,botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,{type:'turn',targetName:decision.targetName}));
+      if (Math.random() < 0.85) botMessage(room,bot,botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,botContext(room,bot,{type:'turn',targetName:decision.targetName})));
       notify(room);
       room.botTimer = setTimeout(() => {
         if (!room.game || room.game.phase !== 'playing' || room.game.currentId !== currentId) return;
         try {
           selectCard(room.game,bot.id,decision.targetId,decision.cardId);
-          if (room.game.phase === 'shuffling') scheduleShuffle(room);
+          if (room.game.phase === 'round-end') scheduleRoundEnd(room);
           else { notify(room); scheduleBotTurn(room); }
         } catch (e) { console.error('AI 카드 공개 실패', e); scheduleBotTurn(room); }
       }, Math.max(30, Math.min(1100, Math.floor(delay * 0.55))));
     } catch (e) { console.error('AI 선택 실패', e); }
   }, delay);
 }
-function scheduleBotReply(room, humanMessage) {
-  if (room.replyTimer || room.game?.phase !== 'playing') return;
-  const bots = room.players.filter(p=>p.bot);
-  if (!bots.length) return;
-  const tagged = bots.find(b=>humanMessage.text.includes(b.name));
-  const bot = tagged || bots[Math.floor(Math.random() * bots.length)];
-  if (!tagged && !shouldReply(humanMessage.text,bot.difficulty)) return;
+/** Named AI always answers, even if it has never spoken. Questions are queued, not dropped. */
+function chooseReplyBots(room, humanMessage) {
+  const bots = room.players.filter(p => p.bot);
+  if (!bots.length) return [];
+  const source = humanMessage.text;
+  const tagged = bots.filter(bot => source.includes(bot.name) || source.includes(bot.name.replace(/^AI\s+/, '')));
+  if (tagged.length) return tagged;
+  const question = classifyCardQuestion(source);
+  if (!question.cardQuestion && !shouldReply(source, 'normal')) return [];
+  const unspeaking = bots.filter(bot => !room.messages.some(m => m.playerId === bot.id && m.round === humanMessage.round));
+  if (question.cardQuestion && /모두|전부|다들|각자/.test(source)) return bots;
+  if (unspeaking.length && question.cardQuestion) return [unspeaking[0]];
+  return [bots[Math.floor(Math.random()*bots.length)]];
+}
+function drainReplyQueue(room) {
+  if (room.replyTimer || !room.replyQueue?.length) return;
+  const next = room.replyQueue.shift();
   room.replyTimer = setTimeout(() => {
     room.replyTimer = null;
-    if (room.game?.phase !== 'playing' || !room.players.includes(bot)) return;
-    const reply = botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,{type:'reply',text:humanMessage.text});
-    botMessage(room,bot,reply);
-  }, Math.max(50,Math.min(1850,room.botDelayMs ?? 1100)));
+    const bot = room.players.find(p => p.bot && p.id === next.botId);
+    // Never use a new-round hand when replying to an old-round question.
+    if (room.game?.phase === 'playing' && room.game.round === next.message.round && bot) {
+      const reply = botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,
+        botContext(room,bot,{type:'reply',text:next.message.text,askedBy:next.message.name}));
+      botMessage(room,bot,reply);
+    }
+    drainReplyQueue(room);
+  }, Math.max(50, Math.min(1350, room.replyDelayMs ?? room.botDelayMs ?? 900)));
+}
+function scheduleBotReply(room, humanMessage) {
+  if (room.game?.phase !== 'playing') return;
+  const bots = chooseReplyBots(room, humanMessage);
+  room.replyQueue ??= [];
+  for (const bot of bots) {
+    // Prevent identical queued answers when several events arrive in rapid succession.
+    if (room.replyQueue.length < 20) room.replyQueue.push({ botId: bot.id, message: humanMessage });
+  }
+  drainReplyQueue(room);
 }
 async function receiveBody(req) {
   let text = '';
@@ -172,7 +256,7 @@ async function api(action, data, options = {}) {
   if (action === 'create') {
     const name = cleanName(data.name);
     if (!name) throw err(400, '닉네임을 입력해주세요.');
-    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, shuffleTimer: null, botDelayMs: options.botDelayMs, shuffleDelayMs: options.shuffleDelayMs };
+    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, replyQueue: [], shuffleTimer: null, claimTimer:null, botClaimTimer:null, revealTimer:null, botDelayMs: options.botDelayMs, replyDelayMs: options.replyDelayMs, shuffleDelayMs: options.shuffleDelayMs, claimDelayMs: options.claimDelayMs, revealDelayMs: options.revealDelayMs };
     rooms.set(room.code, room);
     const person = addPlayer(room, name);
     person.ready = true;
@@ -219,10 +303,18 @@ async function api(action, data, options = {}) {
     if (room.players.length < 4 || room.players.length > 8) throw err(409, '4~8명이 모여야 합니다.');
     if (room.players.some(p => !p.ready || (!p.bot && p.streams.size === 0))) throw err(409, '전원이 접속해 준비 완료해야 합니다.');
     room.messages = [];
+    for (const bot of room.players.filter(p=>p.bot)) bot.stance = null;
     room.game = newGame(room.players.map(({id, name, bot, difficulty}) => ({id, name, bot, difficulty})));
+    systemMessage(room, '1라운드 시작 · 카드를 섞는 중입니다.', 1);
+    scheduleShuffle(room);
+    return {};
+  }
+  if (action === 'declare') {
+    if (!room.game) throw err(409,'진행 중인 게임이 아닙니다.');
+    if (room.game.claimEndsAt && Date.now() >= room.game.claimEndsAt) throw err(409,'선언 시간이 종료되었습니다.');
+    try { declareTreasure(room.game,person.id,data.number); }
+    catch(e) { throw err(409,e.message); }
     notify(room);
-    sendBotIntro(room, 'intro');
-    scheduleBotTurn(room);
     return {};
   }
   if (action === 'mark' || action === 'unmark') {
@@ -239,7 +331,7 @@ async function api(action, data, options = {}) {
     if (typeof data.targetId !== 'string' || typeof data.cardId !== 'string') throw err(400, '잘못된 카드 선택입니다.');
     try { selectCard(room.game, person.id, data.targetId, data.cardId); }
     catch (e) { throw err(409, e.message); }
-    if (room.game.phase === 'shuffling') scheduleShuffle(room);
+    if (room.game.phase === 'round-end') scheduleRoundEnd(room);
     else { notify(room); scheduleBotTurn(room); }
     return {};
   }
@@ -294,7 +386,7 @@ function openEvents(req, res, url) {
 }
 
 export function createServer(options = {}) {
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://localhost');
     try {
       if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, rooms: rooms.size });
@@ -308,7 +400,7 @@ export function createServer(options = {}) {
       if (entry) {
         const [fileName, mime] = entry;
         const content = await readFile(path.join(filesDir, fileName));
-        res.writeHead(200, { 'content-type': mime, 'x-content-type-options': 'nosniff' });
+        res.writeHead(200, { 'content-type': mime, 'x-content-type-options': 'nosniff', 'cache-control': 'no-cache' });
         return res.end(content);
       }
       return json(res, 404, { ok: false, error: '페이지를 찾을 수 없습니다.' });
@@ -318,6 +410,12 @@ export function createServer(options = {}) {
       if (!e.status) console.error(e);
     }
   });
+  // Stop pending AI/shuffle timers when this server is closed (also during tests).
+  server.on('close', () => {
+    for (const room of rooms.values()) clearRoomTimers(room);
+    rooms.clear();
+  });
+  return server;
 }
 // Unused rooms expire to prevent indefinite memory growth.
 setInterval(() => {

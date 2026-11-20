@@ -44,8 +44,11 @@ export function chooseBotMove(view, messages = [], difficulty = 'normal', random
     const cardsRevealed = view.revealed.filter(r => r.ownerId === target.id && r.round === view.round);
     const foundTreasures = cardsRevealed.filter(r => r.type === 'treasure').length;
     let estimate = estimatedTreasureDensity;
-    if (said?.treasure !== null && said?.treasure !== undefined) {
-      const claimedRemaining = Math.max(0, said.treasure - foundTreasures);
+    // The timed declaration next to the nickname is the primary public claim.
+    // Chat remains useful, but no AI should need to rely on only two intro speakers.
+    const announced = Number.isInteger(target.treasureClaim) ? target.treasureClaim : said?.treasure;
+    if (announced !== null && announced !== undefined) {
+      const claimedRemaining = Math.max(0, announced - foundTreasures);
       const claimProbability = cap(claimedRemaining / Math.max(1,target.cards.length),0,0.85);
       const trust = difficulty === 'hard' ? 0.62 : difficulty === 'normal' ? 0.4 : 0.06;
       estimate = estimate * (1-trust) + claimProbability * trust;
@@ -68,32 +71,63 @@ export function chooseBotMove(view, messages = [], difficulty = 'normal', random
   return { targetId: target.id, cardId: choose(target.cards, random), targetName: target.name };
 }
 
-function botClaim(view, difficulty, random) {
-  const { empty, treasure, kraken } = view.mySecret.counts;
-  const isSkeleton = view.mySecret.role === 'skeleton';
-  let announced = treasure;
-  // Skeletons deliberately bluff more convincingly on high difficulty.
-  const lieChance = difficulty === 'easy' ? 0.22 : difficulty === 'normal' ? 0.62 : 0.94;
-  if (isSkeleton && random() < lieChance) {
-    announced = treasure === 0 ? 1 : treasure >= 2 ? 0 : 2;
-  } else if (!isSkeleton && difficulty === 'hard' && random() < 0.13) {
-    announced = treasure === 0 ? 1 : Math.max(0,treasure-1);
-  }
-  const variants = [
-    `지금 내 카드에는 보물 ${announced}개가 있어요. 믿을지는 자유!`,
-    `제 손패는 보물이 ${announced}개라고 말할게요. 어디 있는지는 저도 몰라요.`,
-    announced ? `이번 라운드 제 손에 보물 ${announced}개라고 봅니다. 골라보실래요?` : '이번 라운드 제 손에 보물 0개입니다. 다른 사람부터 찾아봐요.',
-  ];
-  if (kraken && isSkeleton && random() < 0.33) variants.push('제 카드는 좀 수상해요. 그렇지만 다른 사람 말을 더 따져보죠.');
-  return choose(variants, random);
+/** Recognize direct card questions without requiring a cloud AI API. */
+export function classifyCardQuestion(value) {
+  const source = String(value || '').replace(/\s+/g, '');
+  const treasure = /보물|treasure|보석/i.test(source);
+  const kraken = /크라켄|kraken/i.test(source);
+  return { treasure, kraken, cardQuestion: treasure || kraken };
 }
 
-/** Contextual, bounded dialogue with information known to this specific bot. */
+/** One stable statement per bot and per round; only its own redacted hand is read. */
+export function createBotStance(view, difficulty = 'normal', random = Math.random) {
+  if (!view?.mySecret) throw new Error('AI 개인 정보가 필요합니다.');
+  const { treasure, kraken } = view.mySecret.counts;
+  const skeleton = view.mySecret.role === 'skeleton';
+  const lieChance = difficulty === 'easy' ? 0.18 : difficulty === 'normal' ? 0.58 : 0.88;
+  let treasureClaim = treasure;
+  if (skeleton && random() < lieChance) {
+    // Attract picks when holding fewer treasures, or downplay a genuinely rich hand.
+    treasureClaim = treasure === 0 ? 1 : treasure >= 2 ? treasure - 1 : 2;
+  } else if (!skeleton && difficulty === 'hard' && random() < 0.12) {
+    treasureClaim = treasure ? treasure - 1 : 1;
+  }
+  // Skeletons holding the Kraken usually deny it to invite a card pick.
+  const krakenClaim = kraken > 0
+    ? !(skeleton && random() < lieChance)
+    : Boolean(skeleton && random() < lieChance * 0.13);
+  return { round: view.round, treasureClaim, krakenClaim };
+}
+
+function botClaim(view, difficulty, random, stance) {
+  const stated = stance || createBotStance(view, difficulty, random);
+  const announced = stated.treasureClaim;
+  return choose([
+    `이번 ${view.round}라운드 제 카드에는 보물 ${announced}개가 있어요.`,
+    `제 손패는 보물이 ${announced}개라고 말할게요. 위치까지 아는 건 아니에요.`,
+    `지금 제 보물은 ${announced}개입니다. 믿을지는 선택해 주세요.`,
+  ], random);
+}
+
+function krakenAnswer(view, difficulty, random, stance) {
+  const claim = (stance || createBotStance(view,difficulty,random)).krakenClaim;
+  if (claim) return choose([
+    '크라켄 있냐고요? 제 카드에 있다고 말할게요. 절 지목할 땐 신중하세요.',
+    '네, 이번 라운드 제 카드에 크라켄이 있다고 주장합니다. 다른 카드부터 보시죠.',
+  ],random);
+  return choose([
+    '크라켄이요? 이번 라운드 제 카드에는 없다고 말하겠습니다. 그렇지만 믿을지는 자유예요.',
+    '제 카드에는 크라켄 없어요. 단, 어떤 카드가 안전한지는 저도 몰라요.',
+  ],random);
+}
+
+/** Targeted answers for treasure count and Kraken presence; AI may bluff strategically. */
 export function botSpeak(view, messages, difficulty = 'normal', context = {type:'intro'}, random = Math.random) {
   if (!view?.mySecret) return null;
   const t = context?.type || 'intro';
   const source = String(context?.text || '').slice(0,180);
-  if (t === 'intro' || t === 'round') return botClaim(view,difficulty,random);
+  const stance = context?.stance || createBotStance(view,difficulty,random);
+  if (t === 'intro' || t === 'round') return botClaim(view,difficulty,random,stance);
   if (t === 'turn') {
     return choose([
       `${context.targetName || '그쪽'}님의 카드를 검토해볼게요. 이번 선택은 확신보다 확률입니다.`,
@@ -102,26 +136,25 @@ export function botSpeak(view, messages, difficulty = 'normal', context = {type:
     ], random);
   }
   if (t === 'reply') {
-    if (/보물|treasure/i.test(source)) return choose([
-      botClaim(view,difficulty,random),
-      `보물이라고 말하는 사람은 많죠. 방금 공개된 ${view.revealed.length}장 결과도 같이 보세요.`,
-    ],random);
-    if (/크라켄|위험|kraken/i.test(source)) return choose([
-      '크라켄은 한 장뿐이에요. 근거 없이 안전하다고 단정하면 안 되죠.',
-      '크라켄 위험 신호는 기억해둘게요. 어느 손패에 있는지는 저도 몰라요.',
-    ],random);
+    const question = classifyCardQuestion(source);
+    const prefix = context.askedBy ? `${String(context.askedBy).slice(0,18)}님, ` : '';
+    if (question.treasure && question.kraken) return prefix + botClaim(view,difficulty,random,stance) + ' ' + krakenAnswer(view,difficulty,random,stance);
+    if (question.treasure) return prefix + botClaim(view,difficulty,random,stance);
+    if (question.kraken) return prefix + krakenAnswer(view,difficulty,random,stance);
     if (/거짓|의심|믿|스켈레톤|누가|누구|추리/i.test(source)) return choose([
-      '말보다 공개된 카드 기록을 봐야 해요. 주장과 결과가 다른 사람이 있나요?',
-      '역할은 숨겨져 있죠. 확답은 못 하지만 손패 주장부터 비교해 보겠습니다.',
+      prefix+'말보다 이번 라운드 공개된 카드를 봐야 해요. 주장과 결과가 다른 사람이 있나요?',
+      prefix+'역할은 비밀이지만 발언 기록은 남아요. 이번 라운드 주장부터 비교해 봐요.',
     ],random);
-    if (/안녕|ㅎㅇ|hello|hi/i.test(source)) return '반가워요! 항해 준비 완료. 카드 얘기를 해볼까요?';
-    if (source.includes('?') || source.includes('？')) return '지금은 확정할 근거가 부족해요. 카드 공개 결과를 같이 보죠.';
-    return choose(['그럴 수도 있겠네요. 공개 기록으로 검증해 봐요.','그 말을 기억해둘게요. 지금은 보물부터 찾는 게 중요해요.'],random);
+    if (/안녕|ㅎㅇ|hello|hi/i.test(source)) return prefix+'반가워요! 이번 라운드 카드 얘기를 해볼까요?';
+    if (/[?？]/.test(source)) return prefix+'지금은 확정할 근거가 부족해요. 이번 라운드 공개 카드부터 확인하죠.';
+    return choose([prefix+'그럴 수도 있겠네요. 공개 기록으로 검증해 봐요.',prefix+'그 말을 기억해둘게요.'],random);
   }
   return null;
 }
 
 export function shouldReply(text, difficulty='normal', random=Math.random) {
-  const meaningful = /[?？]|보물|크라켄|거짓|의심|스켈레톤|누가|누구|안녕|ㅎㅇ|믿|treasure|kraken/i.test(text);
+  const question = classifyCardQuestion(text);
+  if (question.cardQuestion) return true;
+  const meaningful = /[?？]|거짓|의심|스켈레톤|누가|누구|안녕|ㅎㅇ|믿/i.test(text);
   return random() < (meaningful ? difficulty === 'easy' ? .45 : .92 : .16);
 }
