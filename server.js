@@ -4,7 +4,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishReview, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
 import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply, createBotStance, classifyCardQuestion } from './bot-ai.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -74,8 +74,8 @@ const BOT_NAMES = ['루나', '코랄', '네모', '파도', '닻별', '해초', '
 const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
 function clearRoomTimers(room) {
   clearTimeout(room.botTimer); clearTimeout(room.replyTimer); clearTimeout(room.shuffleTimer);
-  clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer);
-  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.replyQueue = [];
+  clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer); clearTimeout(room.reviewTimer);
+  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.reviewTimer = null; room.replyQueue = [];
 }
 function addBot(room, difficulty) {
   if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
@@ -143,6 +143,20 @@ function scheduleDeclarations(room) {
     scheduleBotTurn(room);
   }, delay);
 }
+function scheduleReview(room) {
+  const game = room.game;
+  if (game?.phase !== 'reviewing' || room.reviewTimer) return;
+  const delay = Math.max(25, room.reviewDelayMs ?? 5000);
+  game.reviewEndsAt = Date.now() + delay;
+  notify(room);
+  room.reviewTimer = setTimeout(() => {
+    room.reviewTimer = null;
+    if (room.game !== game || game.phase !== 'reviewing') return;
+    finishReview(game);
+    systemMessage(room, `${game.round}라운드 내 카드 확인 완료 · 보물 개수를 5초 동안 선언하세요.`,game.round);
+    scheduleDeclarations(room);
+  }, delay);
+}
 function scheduleShuffle(room) {
   if (room.game?.phase !== 'shuffling' || room.shuffleTimer) return;
   const delay = Math.max(25, room.shuffleDelayMs ?? 1650);
@@ -154,8 +168,8 @@ function scheduleShuffle(room) {
     if (room.game !== game || game.phase !== 'shuffling') return;
     try {
       finishShuffle(game);
-      systemMessage(room, `${game.round}라운드 카드 재배분 완료 · 5초 동안 보물 개수를 선언하세요.`,game.round);
-      scheduleDeclarations(room);
+      systemMessage(room, `${game.round}라운드 카드 재배분 완료 · 5초 동안 자기 카드를 확인하세요.`,game.round);
+      scheduleReview(room);
     } catch (error) { console.error('라운드 재분배 실패',error); }
   },delay);
 }
@@ -256,7 +270,7 @@ async function api(action, data, options = {}) {
   if (action === 'create') {
     const name = cleanName(data.name);
     if (!name) throw err(400, '닉네임을 입력해주세요.');
-    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, replyQueue: [], shuffleTimer: null, claimTimer:null, botClaimTimer:null, revealTimer:null, botDelayMs: options.botDelayMs, replyDelayMs: options.replyDelayMs, shuffleDelayMs: options.shuffleDelayMs, claimDelayMs: options.claimDelayMs, revealDelayMs: options.revealDelayMs };
+    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, replyQueue: [], shuffleTimer: null, claimTimer:null, botClaimTimer:null, revealTimer:null, reviewTimer:null, reviewDelayMs: options.reviewDelayMs, botDelayMs: options.botDelayMs, replyDelayMs: options.replyDelayMs, shuffleDelayMs: options.shuffleDelayMs, claimDelayMs: options.claimDelayMs, revealDelayMs: options.revealDelayMs };
     rooms.set(room.code, room);
     const person = addPlayer(room, name);
     person.ready = true;
