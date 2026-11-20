@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from '../server.js';
 import {chooseBotMove, botSpeak, shouldReply} from '../bot-ai.js';
-import {newGame, publicGame} from '../public/game-core.js';
+import {newGame, publicGame, finishShuffle, finishDeclarations} from '../public/game-core.js';
 
 const roster = () => Array.from({length:4},(_,i)=>({id:`p${i}`,name:`AI${i}`,bot:true,difficulty:'hard'}));
 
 test('AI picks only publicly selectable cards; decision uses redacted player view', () => {
   const g = newGame(roster());
+  finishShuffle(g);finishDeclarations(g);
   const id = g.currentId;
   const view = publicGame(g,id);
   assert.equal(view.players.every(p=>p.bot), true);
@@ -22,7 +23,7 @@ test('AI picks only publicly selectable cards; decision uses redacted player vie
   assert.equal(shouldReply('크라켄 있어?', 'hard',()=>0.3),true);
 });
 
-const server=createServer({botDelayMs: 65, shuffleDelayMs: 40});
+const server=createServer({botDelayMs:65, shuffleDelayMs:40,claimDelayMs:90,revealDelayMs:75});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const api = async(action,data={}) => {
@@ -54,8 +55,9 @@ test('1 human + 3 AI: real server starts, turns are automatic, chat replies, vic
     assert.deepEqual(lobby.players.filter(p=>p.bot).map(p=>p.difficulty),['easy','normal','hard']);
     assert.equal((await api('start',s)).status,200);
     assert.equal((await api('add-bot',{...s,difficulty:'hard'})).status,409);
+    await pause(180);
     assert.equal((await api('chat',{...s,text:`${lobby.players.find(p=>p.bot).name} 크라켄 어디있어?`})).status,200);
-    await pause(160);
+    await pause(220);
     let snapshot=(await api('resume',s)).state;
     assert.ok(snapshot.messages.some(m=>m.bot));
     assert.ok(snapshot.messages.some(m=>m.bot && m.text.includes('크라켄')));
@@ -100,6 +102,7 @@ test('2 humans + 2 AI, host permissions, difficulty changes, and removal', async
     assert.equal((await api('add-bot',{...host,difficulty:'normal'})).status,200);
     assert.equal((await api('ready',friend)).status,200);
     assert.equal((await api('start',host)).status,200);
+    await pause(180);
     lobby=(await api('resume',host)).state;
     assert.equal(lobby.game.playerCount,4);
     assert.equal(lobby.game.players.filter(p=>p.bot).length,2);
