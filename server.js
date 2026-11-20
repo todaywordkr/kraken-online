@@ -4,7 +4,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishReview, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
+import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishDarkIntro, finishRoleReveal, finishReview, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
 import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply, createBotStance, classifyCardQuestion } from './bot-ai.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -74,8 +74,8 @@ const BOT_NAMES = ['루나', '코랄', '네모', '파도', '닻별', '해초', '
 const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
 function clearRoomTimers(room) {
   clearTimeout(room.botTimer); clearTimeout(room.replyTimer); clearTimeout(room.shuffleTimer);
-  clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer); clearTimeout(room.reviewTimer);
-  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.reviewTimer = null; room.replyQueue = [];
+  clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer); clearTimeout(room.reviewTimer); clearTimeout(room.roleTimer); clearTimeout(room.darkTimer);
+  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.reviewTimer = null; room.roleTimer = null; room.darkTimer = null; room.replyQueue = [];
 }
 function addBot(room, difficulty) {
   if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
@@ -157,9 +157,37 @@ function scheduleReview(room) {
     scheduleDeclarations(room);
   }, delay);
 }
+function scheduleIntroDark(room) {
+  const game = room.game;
+  if (game?.phase !== 'intro-dark' || room.darkTimer) return;
+  const delay = Math.max(25, room.darkDelayMs ?? 2000);
+  game.darkEndsAt = Date.now() + delay;
+  notify(room);
+  room.darkTimer = setTimeout(() => {
+    room.darkTimer = null;
+    if (room.game !== game || game.phase !== 'intro-dark') return;
+    finishDarkIntro(game);
+    systemMessage(room,'1라운드 · 자신의 비밀 역할을 3초 동안 확인하세요.',1);
+    scheduleRoleReveal(room);
+  }, delay);
+}
+function scheduleRoleReveal(room) {
+  const game = room.game;
+  if (game?.phase !== 'role-reveal' || room.roleTimer) return;
+  const delay = Math.max(25, room.roleDelayMs ?? 3000);
+  game.roleEndsAt = Date.now() + delay;
+  notify(room);
+  room.roleTimer = setTimeout(() => {
+    room.roleTimer = null;
+    if (room.game !== game || game.phase !== 'role-reveal') return;
+    finishRoleReveal(game);
+    systemMessage(room, '1라운드 역할 확인 완료 · 카드를 3초 동안 섞습니다.', 1);
+    scheduleShuffle(room);
+  }, delay);
+}
 function scheduleShuffle(room) {
   if (room.game?.phase !== 'shuffling' || room.shuffleTimer) return;
-  const delay = Math.max(25, room.shuffleDelayMs ?? 1650);
+  const delay = Math.max(25, room.shuffleDelayMs ?? 3000);
   const game = room.game;
   game.shuffleEndsAt = Date.now() + delay;
   notify(room);
@@ -270,7 +298,7 @@ async function api(action, data, options = {}) {
   if (action === 'create') {
     const name = cleanName(data.name);
     if (!name) throw err(400, '닉네임을 입력해주세요.');
-    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, replyQueue: [], shuffleTimer: null, claimTimer:null, botClaimTimer:null, revealTimer:null, reviewTimer:null, reviewDelayMs: options.reviewDelayMs, botDelayMs: options.botDelayMs, replyDelayMs: options.replyDelayMs, shuffleDelayMs: options.shuffleDelayMs, claimDelayMs: options.claimDelayMs, revealDelayMs: options.revealDelayMs };
+    const room = { code: newCode(), players: [], hostId: null, game: null, messages: [], lastUsed: Date.now(), botTimer: null, replyTimer: null, replyQueue: [], shuffleTimer: null, darkTimer:null, claimTimer:null, botClaimTimer:null, revealTimer:null, reviewTimer:null, reviewDelayMs: options.reviewDelayMs, darkDelayMs: options.darkDelayMs, roleDelayMs: options.roleDelayMs, botDelayMs: options.botDelayMs, replyDelayMs: options.replyDelayMs, shuffleDelayMs: options.shuffleDelayMs, claimDelayMs: options.claimDelayMs, revealDelayMs: options.revealDelayMs };
     rooms.set(room.code, room);
     const person = addPlayer(room, name);
     person.ready = true;
@@ -319,8 +347,8 @@ async function api(action, data, options = {}) {
     room.messages = [];
     for (const bot of room.players.filter(p=>p.bot)) bot.stance = null;
     room.game = newGame(room.players.map(({id, name, bot, difficulty}) => ({id, name, bot, difficulty})));
-    systemMessage(room, '1라운드 시작 · 카드를 섞는 중입니다.', 1);
-    scheduleShuffle(room);
+    systemMessage(room, '1라운드 시작 · 2초 암막 → 비밀 역할 3초 → 카드 섞기 3초 → 카드 확인 5초 → 보물 선언 5초', 1);
+    scheduleIntroDark(room);
     return {};
   }
   if (action === 'declare') {
