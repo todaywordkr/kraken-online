@@ -10,9 +10,9 @@ const cap = (value, low, high) => Math.max(low, Math.min(high, value));
 function decodeClaim(text) {
   const t = String(text || '').replace(/\s+/g, '');
   const noTreasure = /보물(없|0개|제로|영개)|보물은0|보물0|보물이없/.test(t);
-  const yesTreasure = /(보물|황금|다이아).{0,12}(있|[1-5]개|하나|둘|많|나왔)|(?:있어|있다).{0,7}보물/.test(t);
+  const yesTreasure = /(보물|황금|다이아).{0,12}(있|[1-8]개|하나|둘|많|나왔)|(?:있어|있다).{0,7}보물/.test(t);
   const kraken = /크라켄.{0,7}(있|나왔|보유)|위험|조심/.test(t);
-  const countMatch = t.match(/보물[^0-9]{0,6}([0-5])개?/);
+  const countMatch = t.match(/보물[^0-9]{0,6}([0-8])개?/);
   return { treasure: countMatch ? Number(countMatch[1]) : noTreasure ? 0 : yesTreasure ? 1 : null, kraken };
 }
 function latestClaims(messages, round) {
@@ -99,24 +99,51 @@ export function classifyCardQuestion(value) {
 /** One stable statement per bot and per round; only its own redacted hand is read. */
 export function createBotStance(view, difficulty = 'normal', random = Math.random) {
   if (!view?.mySecret) throw new Error('AI 개인 정보가 필요합니다.');
-  const { treasure, kraken } = view.mySecret.counts;
+  const { treasure, kraken, empty } = view.mySecret.counts;
+  const handSize = treasure + kraken + empty;
+  // A declaration may never exceed what a player *could* hold at this moment.
+  // Some older tests construct a minimal view without remainingTreasure.
+  const limit = Math.max(0, Math.min(handSize, view.remainingTreasure ?? handSize));
+  const claim = (value) => Math.max(0, Math.min(limit, value));
   const skeleton = view.mySecret.role === 'skeleton';
-  const lieChance = difficulty === 'easy' ? 0.18 : difficulty === 'normal' ? 0.58 : 0.88;
-  let treasureClaim = treasure;
-  if (!skeleton && kraken && treasure > 0 && random() < (difficulty === 'hard' ? 0.82 : 0.48)) {
-    // Explorers sometimes hide their treasures to discourage picking their dangerous Kraken hand.
-    treasureClaim = 0;
-  } else if (skeleton && random() < lieChance) {
-    // Skeletons may both overclaim to attract picks and underclaim to hide valuable cards.
-    if (treasure === 0) treasureClaim = random() < 0.65 ? 2 : 1;
-    else treasureClaim = random() < 0.50 ? 0 : Math.min(view.mySecret.counts.empty + treasure + kraken, treasure + 2);
-  } else if (!skeleton && difficulty === 'hard' && random() < 0.18) {
-    treasureClaim = treasure ? treasure - 1 : 1;
+  const danger = kraken > 0;
+  const bluffRate = difficulty === 'easy' ? 0.22 : difficulty === 'normal' ? 0.68 : 1;
+  let treasureClaim = claim(treasure);
+  let krakenClaim = danger;
+
+  if (skeleton && danger) {
+    // The most valuable Skeleton bluff: conceal the Kraken and lure explorers
+    // with an *apparently promising* hand. Even with zero real treasure,
+    // announce at least one, provided a legal positive claim exists.
+    if (random() < bluffRate && limit >= 1) {
+      const lure = random() < 0.55 ? 2 : 1;
+      treasureClaim = claim(Math.max(treasure + (treasure < limit ? 1 : 0), lure));
+    }
+    if (random() < (difficulty === 'hard' ? 1 : difficulty === 'normal' ? 0.85 : 0.35)) krakenClaim = false;
+  } else if (skeleton && treasure > 0) {
+    // Keep the useful treasure hidden so explorers waste picks elsewhere:
+    // e.g. 2 real -> 1 claimed; sometimes 2 -> 0.
+    if (random() < bluffRate) {
+      treasureClaim = claim(treasure === 1 || random() >= 0.72 ? 0 : treasure - 1);
+    }
+    krakenClaim = false;
+  } else if (skeleton) {
+    // With only empty cards, overclaim to waste an explorer's card reveal.
+    if (random() < bluffRate && limit > 0) {
+      treasureClaim = claim(random() < 0.7 ? 1 : 2);
+    }
+    krakenClaim = false;
+  } else if (danger) {
+    // Crew holding the Kraken should deter others from opening this hand;
+    // hide even real treasure (2 real -> claim 0) on hard difficulty.
+    if (treasure > 0 && random() < (difficulty === 'hard' ? 1 : difficulty === 'normal' ? 0.72 : 0.25)) {
+      treasureClaim = 0;
+    }
+    krakenClaim = random() < (difficulty === 'hard' ? 1 : difficulty === 'normal' ? 0.85 : 0.55);
+  } else if (treasure > 0 && difficulty !== 'easy' && random() < (difficulty === 'hard' ? 0.08 : 0.15)) {
+    // Small, uncommon friendly bluff; never hide treasure routinely.
+    treasureClaim = claim(treasure - 1);
   }
-  // Skeletons holding the Kraken usually deny it to invite a card pick.
-  const krakenClaim = kraken > 0
-    ? !(skeleton && random() < lieChance)
-    : Boolean(skeleton && random() < lieChance * 0.13);
   return { round: view.round, treasureClaim, krakenClaim };
 }
 
