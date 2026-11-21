@@ -94,9 +94,9 @@ test('어려움 탐험대: 보물 + 크라켄 동시 보유 시 보물 0개로 �
   assert.equal(stance.krakenClaim,true);
 });
 
-test('어려움 AI는 8인 카드 8장 한도와 남은 보물 제한을 넘겨서 말하지 않는다',()=>{
+test('어려움 AI는 8인 카드 8장 한도를 넘지 않으면서 남은 보물 수 이상으로 거짓말할 수 있다',()=>{
   const lure=createBotStance(aiView('skeleton',5,1,2,8),'hard',()=>0.1);
   assert.ok(lure.treasureClaim>=5 && lure.treasureClaim<=8);
   const capped=createBotStance(aiView('skeleton',0,1,7,1),'hard',()=>0.1);
-  assert.equal(capped.treasureClaim,1);
+  assert.equal(capped.treasureClaim,2); // The claim may exceed the actual global treasure supply.
 });
