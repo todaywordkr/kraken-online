@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { newGame, publicGame, selectCard, markCard, clearMark, finishShuffle, finishDarkIntro, finishRoleReveal, finishReview, finishRoundReveal, declareTreasure, finishDeclarations, maxTreasureClaim } from './public/game-core.js';
 import { BOT_DIFFICULTIES, chooseBotMove, botSpeak, shouldReply, createBotStance, classifyCardQuestion } from './bot-ai.js';
+import { evidenceReaction } from './bot-reasoning.js';
 
 const filesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const rooms = new Map();
@@ -75,7 +76,7 @@ const VALID_DIFFICULTIES = new Set(Object.keys(BOT_DIFFICULTIES));
 function clearRoomTimers(room) {
   clearTimeout(room.botTimer); clearTimeout(room.replyTimer); clearTimeout(room.shuffleTimer);
   clearTimeout(room.claimTimer); clearTimeout(room.botClaimTimer); clearTimeout(room.revealTimer); clearTimeout(room.reviewTimer); clearTimeout(room.roleTimer); clearTimeout(room.darkTimer);
-  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.reviewTimer = null; room.roleTimer = null; room.darkTimer = null; room.replyQueue = [];
+  room.botTimer = null; room.replyTimer = null; room.shuffleTimer = null; room.aiEvidenceAlerts = new Set(); room.claimTimer = null; room.botClaimTimer = null; room.revealTimer = null; room.reviewTimer = null; room.roleTimer = null; room.darkTimer = null; room.replyQueue = [];
 }
 function addBot(room, difficulty) {
   if (room.players.length >= 8) throw err(409, '방 정원이 8명입니다.');
@@ -112,6 +113,27 @@ function sendBotIntro(room, contextType) {
   const speakers = list.slice(0, Math.min(2, list.length));
   for (const bot of speakers) {
     botMessage(room, bot, botSpeak(gameViewForBot(room,bot), room.messages, bot.difficulty, botContext(room, bot, { type: contextType })));
+  }
+}
+/** An AI challenges a demonstrably false declaration using public evidence only.
+ * Another AI may respond, so bots actually discuss each other's claims.
+ * No role or private hand is ever queried except the observing AI's own view.
+ */
+export function discussPublicReveal(room, reveal) {
+  if (!room.game || !reveal) return;
+  const key = `${reveal.round}:${reveal.ownerId}`;
+  if (!room.aiEvidenceAlerts) room.aiEvidenceAlerts = new Set();
+  if (room.aiEvidenceAlerts.has(key)) return;
+  const observers = room.players.filter(p=>p.bot && p.id!==reveal.ownerId && p.difficulty!=='easy');
+  if (!observers.length) return;
+  const bot=observers.find(p=>p.difficulty==='hard') || observers[0];
+  const text=evidenceReaction(gameViewForBot(room,bot),reveal,bot.difficulty);
+  if (!text) return;
+  room.aiEvidenceAlerts.add(key);
+  botMessage(room,bot,text);
+  const challenged=room.players.find(p=>p.id===reveal.ownerId && p.bot);
+  if (challenged) {
+    botMessage(room,challenged,`제 선언과 공개 결과가 다른 건 사실이에요. 하지만 왜 그런 선언을 했는지는 제 전략일 수 있죠. ${bot.name}님, 거짓말만으로 진영을 확정할 수는 없어요.`);
   }
 }
 function scheduleDeclarations(room) {
@@ -229,12 +251,13 @@ function scheduleBotTurn(room) {
     try {
       const decision = chooseBotMove(gameViewForBot(room,bot),room.messages,bot.difficulty);
       markCard(room.game,bot.id,decision.targetId,decision.cardId);
-      if (Math.random() < 0.85) botMessage(room,bot,botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,botContext(room,bot,{type:'turn',targetName:decision.targetName})));
+      if (Math.random() < 0.85) botMessage(room,bot,botSpeak(gameViewForBot(room,bot),room.messages,bot.difficulty,botContext(room,bot,{type:'turn',targetName:decision.targetName,reason:decision.reason})));
       notify(room);
       room.botTimer = setTimeout(() => {
         if (!room.game || room.game.phase !== 'playing' || room.game.currentId !== currentId) return;
         try {
-          selectCard(room.game,bot.id,decision.targetId,decision.cardId);
+          const revealed=selectCard(room.game,bot.id,decision.targetId,decision.cardId);
+          discussPublicReveal(room,revealed);
           if (room.game.phase === 'round-end') scheduleRoundEnd(room);
           else { notify(room); scheduleBotTurn(room); }
         } catch (e) { console.error('AI 카드 공개 실패', e); scheduleBotTurn(room); }
@@ -346,6 +369,7 @@ async function api(action, data, options = {}) {
     if (room.players.some(p => !p.ready || (!p.bot && p.streams.size === 0))) throw err(409, '전원이 접속해 준비 완료해야 합니다.');
     room.messages = [];
     for (const bot of room.players.filter(p=>p.bot)) bot.stance = null;
+    room.aiEvidenceAlerts = new Set();
     room.game = newGame(room.players.map(({id, name, bot, difficulty}) => ({id, name, bot, difficulty})));
     systemMessage(room, '1라운드 시작 · 2초 암막 → 비밀 역할 3초 → 카드 섞기 3초 → 카드 확인 5초 → 보물 선언 5초', 1);
     scheduleIntroDark(room);
@@ -371,7 +395,7 @@ async function api(action, data, options = {}) {
   if (action === 'pick') {
     if (!room.game) throw err(409, '진행 중인 게임이 아닙니다.');
     if (typeof data.targetId !== 'string' || typeof data.cardId !== 'string') throw err(400, '잘못된 카드 선택입니다.');
-    try { selectCard(room.game, person.id, data.targetId, data.cardId); }
+    try { const revealed=selectCard(room.game, person.id, data.targetId, data.cardId); discussPublicReveal(room,revealed); }
     catch (e) { throw err(409, e.message); }
     if (room.game.phase === 'round-end') scheduleRoundEnd(room);
     else { notify(room); scheduleBotTurn(room); }

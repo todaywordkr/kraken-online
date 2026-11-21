@@ -1,3 +1,4 @@
+import { analyzePublicEvidence, evaluateBotTargets, highestSuspicion } from './bot-reasoning.js';
 /**
  * Offline, rule-based strategic bots. No paid model/API key is required.
  * ALL decisions use a player's redacted publicGame() view: no hidden card order,
@@ -38,54 +39,23 @@ export function analyzeDeclarations(view) {
   };
 }
 
-/** A legal move selected from public information and this bot's own secrets only. */
+/** Cards are selected only from public declarations, public reveals and this bot's own counts. */
 export function chooseBotMove(view, messages = [], difficulty = 'normal', random = Math.random) {
-  if (!view || view.phase !== 'playing') throw new Error('봇 행동 시 게임이 진행 중이어야 합니다.');
-  const current = view.players.find(p => p.id === view.currentId);
-  if (!current || !current.bot) throw new Error('현재 행동자가 봇이 아닙니다.');
-  const options = view.players.filter(p => p.id !== current.id && p.cards.length);
-  if (!options.length) throw new Error('선택할 다른 플레이어 카드가 없습니다.');
-  const claim = latestClaims(messages, view.round);
-  const availableTreasures = view.playerCount - view.treasuresFound;
-  const remainingCards = view.players.reduce((total,p) => total + p.cards.length,0);
-  const estimatedTreasureDensity = availableTreasures / Math.max(1,remainingCards);
-  const selfish = view.mySecret?.role === 'skeleton';
-  const declaration = analyzeDeclarations(view);
-  // When people claim 8 treasures but only 5 exist, no single claimant is proven to be a liar.
-  // Discount ALL statements; publicly revealed cards still have stronger evidentiary weight.
-  const mismatchRatio = declaration.complete ? Math.abs(declaration.difference) / Math.max(1,declaration.availableAtStart) : 0;
-  const discrepancyTrust = Math.max(0.28, 1 - mismatchRatio * 1.25);
-  const ranked = options.map(target => {
-    const said = claim.get(target.id);
-    // Public past reveals provide evidence: repeated claimed treasures followed by empty cards decreases credibility.
-    const cardsRevealed = view.revealed.filter(r => r.ownerId === target.id && r.round === view.round);
-    const foundTreasures = cardsRevealed.filter(r => r.type === 'treasure').length;
-    let estimate = estimatedTreasureDensity;
-    // The timed declaration next to the nickname is the primary public claim.
-    // Chat remains useful, but no AI should need to rely on only two intro speakers.
-    const announced = Number.isInteger(target.treasureClaim) ? target.treasureClaim : said?.treasure;
-    if (announced !== null && announced !== undefined) {
-      const claimedRemaining = Math.max(0, announced - foundTreasures);
-      const claimProbability = cap(claimedRemaining / Math.max(1,target.cards.length),0,0.85);
-      const trust = (difficulty === 'hard' ? 0.62 : difficulty === 'normal' ? 0.4 : 0.06) * discrepancyTrust;
-      estimate = estimate * (1-trust) + claimProbability * trust;
-    }
-    // A claimed kraken is a warning to crew, an attractive target for a skeleton.
-    let hazard = said?.kraken ? 0.40 : 1 / Math.max(remainingCards, 1);
-    const neverVisited = view.revealed.some(r=>r.ownerId === target.id) ? -0.025 : 0.015;
-    let score = selfish ? (hazard * 2.4 - estimate * 0.3) : (estimate * 2.4 - hazard * 1.5);
-    if (difficulty === 'hard') {
-      // Claims aren't proof; give more weight to objective outcomes from this round.
-      const emptyReveals = cardsRevealed.filter(r => r.type === 'empty').length;
-      score += selfish ? emptyReveals * 0.008 : -emptyReveals * 0.016;
-      score += neverVisited;
-    }
-    score += (random() - 0.5) * (difficulty === 'easy' ? 3.0 : difficulty === 'normal' ? 0.72 : 0.22);
-    return { target, score };
-  });
-  ranked.sort((a,b)=>b.score-a.score);
-  const target = ranked[0].target;
-  return { targetId: target.id, cardId: choose(target.cards, random), targetName: target.name };
+  const thinker = view?.players?.find(p => p.id === view.currentId);
+  const { scores } = evaluateBotTargets(view,messages,difficulty);
+  if (!scores.length) throw new Error('선택할 다른 플레이어 카드가 없습니다.');
+  const noise = difficulty === 'easy' ? 1.75 : difficulty === 'normal' ? 0.35 : 0.055;
+  const ranked = scores.map(p=>({...p, noisyScore:p.score+(random()-0.5)*noise}));
+  ranked.sort((a,b)=>b.noisyScore-a.noisyScore);
+  const target=ranked[0];
+  const picked=choose(target.cards,random);
+  // A short rationale is safe to show because it contains no other private hand data.
+  const reason = target.provenFalse
+    ? `${target.targetName}님은 이번 라운드 ${target.claim}개라고 했지만 공개 기록과 맞지 않아요.`
+    : Number.isInteger(target.claim)
+      ? `${target.targetName}님이 보물 ${target.claim}개를 선언했어요. 공개 기록과 이전 발언을 함께 고려합니다.`
+      : `${target.targetName}님에게 공개되지 않은 카드가 남아 있어요.`;
+  return { targetId:target.targetId, cardId:picked, targetName:target.targetName, reason };
 }
 
 /** Recognize direct card questions without requiring a cloud AI API. */
@@ -103,7 +73,7 @@ export function createBotStance(view, difficulty = 'normal', random = Math.rando
   const handSize = treasure + kraken + empty;
   // A declaration may never exceed what a player *could* hold at this moment.
   // Some older tests construct a minimal view without remainingTreasure.
-  const limit = Math.max(0, Math.min(handSize, view.remainingTreasure ?? handSize));
+  const limit = handSize; // A bluff may exceed the actual global treasure supply.
   const claim = (value) => Math.max(0, Math.min(limit, value));
   const skeleton = view.mySecret.role === 'skeleton';
   const danger = kraken > 0;
@@ -177,6 +147,7 @@ export function botSpeak(view, messages, difficulty = 'normal', context = {type:
   const stance = context?.stance || createBotStance(view,difficulty,random);
   if (t === 'intro' || t === 'round') return botClaim(view,difficulty,random,stance);
   if (t === 'turn') {
+    if (difficulty === 'hard' && context.reason && random() < 0.82) return context.reason;
     const declaration = analyzeDeclarations(view);
     if (difficulty === 'hard' && declaration.complete && declaration.difference !== 0 && random() < 0.6) {
       const direction = declaration.difference > 0 ? '많아요' : '적어요';
@@ -198,12 +169,19 @@ export function botSpeak(view, messages, difficulty = 'normal', context = {type:
       if (d.difference === 0) return prefix+`선언 합계는 ${d.announced}개, 실제 남은 보물도 ${d.availableAtStart}개예요. 그래도 서로 거짓말을 상쇄했을 수 있어요.`;
       return prefix+`선언 합계 ${d.announced}개, 실제 남은 보물 ${d.availableAtStart}개입니다. ${Math.abs(d.difference)}개 ${d.difference>0?'초과':'부족'}하니 누군가 사실과 다르게 말하고 있어요. 누구인지는 아직 단정 못 해요.`;
     }
+    if (/거짓|의심|믿|스켈레톤|누가|누구|추리/i.test(source)) {
+      if (view.players?.length) {
+        const analysis=analyzePublicEvidence(view,messages);
+        const proven = analysis.people.filter(p=>p.falseRounds.length);
+        const mostRecent=proven.sort((a,b)=>b.falseRounds.at(-1).round-a.falseRounds.at(-1).round)[0];
+        if (mostRecent) return prefix+`${mostRecent.name}님의 보물 선언은 공개 기록과 모순돼요. 하지만 거짓말만으로 스켈레톤이라고 단정할 수는 없어요.`;
+        const suspect=highestSuspicion(view);
+        if (suspect && suspect.suspiciousChoices>0) return prefix+`${suspect.name}님은 보물 0개를 선언한 쪽도 선택했어요. 의심할 단서지만, 진영을 확정할 근거는 아니에요.`;
+      }
+      return prefix+'아직 확실히 거짓이라고 판명된 선언은 적어요. 공개된 카드와 선언 숫자를 비교해 봐요.';
+    }
     if (question.treasure) return prefix + botClaim(view,difficulty,random,stance);
     if (question.kraken) return prefix + krakenAnswer(view,difficulty,random,stance);
-    if (/거짓|의심|믿|스켈레톤|누가|누구|추리/i.test(source)) return choose([
-      prefix+'말보다 이번 라운드 공개된 카드를 봐야 해요. 주장과 결과가 다른 사람이 있나요?',
-      prefix+'역할은 비밀이지만 발언 기록은 남아요. 이번 라운드 주장부터 비교해 봐요.',
-    ],random);
     if (/안녕|ㅎㅇ|hello|hi/i.test(source)) return prefix+'반가워요! 이번 라운드 카드 얘기를 해볼까요?';
     if (/[?？]/.test(source)) return prefix+'지금은 확정할 근거가 부족해요. 이번 라운드 공개 카드부터 확인하죠.';
     return choose([prefix+'그럴 수도 있겠네요. 공개 기록으로 검증해 봐요.',prefix+'그 말을 기억해둘게요.'],random);
