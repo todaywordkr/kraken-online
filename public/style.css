@@ -179,3 +179,10 @@
 @media(min-width:671px){.score-strip{grid-template-columns:1.35fr 1fr 1fr .85fr 1.4fr}.score-strip>div{padding:15px 16px}}
 
 @media(min-width:671px) and (max-width:1100px){.score-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.score-strip .score-actor{grid-column:span 2}.score-strip .score-round:before{display:none}}
+
+/* v1.7: At 7-8 players, keep 7-8 cards per hand individually tappable on phones. */
+@media (max-width: 670px) {
+  .game-page.many-players .hands-grid { grid-template-columns: 1fr; }
+  .game-page.many-players .cards { gap: 5px; }
+  .game-page.many-players .back-card { max-width: 53px; }
+}

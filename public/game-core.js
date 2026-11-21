@@ -63,11 +63,11 @@ export function newGame(roster) {
     revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, darkEndsAt: null, roleEndsAt: null, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
   };
   deal(game, [
-    ...Array(4 * count - 1).fill('empty'),
+    ...Array(count * count - count - 1).fill('empty'),
     ...Array(count).fill('treasure'),
     'kraken',
   ]);
-  game.log.push({ kind: 'start', message: `항해 시작! ${count}명의 플레이어가 4라운드에 도전합니다.` });
+  game.log.push({ kind: 'start', message: `항해 시작! ${count}명 · 총 ${count * count}장(보물 ${count}장·크라켄 1장·빈 상자 ${count * count - count - 1}장), 4라운드에 도전합니다.` });
   return game;
 }
 
@@ -186,7 +186,7 @@ export function finishRoleReveal(game) {
   game.log.push({kind:'round',message:'1라운드 시작 · 비밀 역할 확인 완료 → 카드를 3초 동안 섞습니다.'});
 }
 
-/** All players inspect their own five/four/three/two card faces for five seconds. */
+/** All players inspect their own (playerCount - round + 1) card types for five seconds. */
 export function finishReview(game) {
   if (game.phase !== 'reviewing') throw new Error('카드 확인 단계가 아닙니다.');
   game.phase = 'declaring';
