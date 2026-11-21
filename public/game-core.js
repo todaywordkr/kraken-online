@@ -60,7 +60,7 @@ export function newGame(roster) {
     phase: 'intro-dark', round: 1, actionInRound: 0, nextCardId: 1,
     players: roster.map((p, i) => ({ id: p.id, name: p.name, bot: Boolean(p.bot), difficulty: p.bot ? p.difficulty : null, role: roles[i], hand: [], claim: null })),
     currentId: roster[randomInt(count)].id,
-    revealed: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, darkEndsAt: null, roleEndsAt: null, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
+    revealed: [], claimHistory: [], lastReveal: null, pending: null, winner: null, endReason: null, log: [], shuffleEndsAt: null, shuffleFromRound: 0, darkEndsAt: null, roleEndsAt: null, reviewEndsAt: null, claimEndsAt: null, roundEndAt: null, pendingTransition: null,
   };
   deal(game, [
     ...Array(count * count - count - 1).fill('empty'),
@@ -100,7 +100,7 @@ export function selectCard(game, actorId, targetId, cardId) {
   const actor = game.players.find((p) => p.id === actorId);
   const reveal = {
     id: card.id, type: card.type, ownerId: owner.id,
-    ownerName: owner.name, actorName: actor.name, round: game.round,
+    ownerName: owner.name, actorName: actor.name, actorId: actor.id, round: game.round,
   };
   game.revealed.push(reveal);
   game.lastReveal = reveal;
@@ -195,11 +195,11 @@ export function finishReview(game) {
   game.log.push({kind:'declare',message:`${game.round}라운드 카드 확인 완료 → 5초 동안 보물 개수를 선언하세요.`});
 }
 
-/** Public maximum: never exceed the size of this player's hand or remaining global treasures. */
+/** Declared values may be lies, including totals higher than the remaining global treasures. */
 export function maxTreasureClaim(game, playerId) {
   const player = game.players.find(p=>p.id===playerId);
   if (!player) throw new Error('선언할 플레이어를 찾을 수 없습니다.');
-  return Math.min(player.hand.length, game.players.length - game.revealed.filter(c=>c.type==='treasure').length);
+  return player.hand.length;
 }
 
 /** Declaring can be a bluff; the true amount stays server-side. */
@@ -220,6 +220,8 @@ export function finishDeclarations(game) {
   for (const player of game.players) {
     if (player.claim === null) player.claim = totals(player.hand).treasure;
   }
+  game.claimHistory ??= [];
+  for (const player of game.players) game.claimHistory.push({round:game.round, playerId:player.id, number:player.claim});
   game.phase = 'playing';
   game.claimEndsAt = null;
   game.log.push({kind:'declare',message:`${game.round}라운드 선언 완료 · 카드 선택 시작!`});
@@ -253,6 +255,7 @@ export function publicGame(game, viewerId = null) {
     lastReveal: game.lastReveal,
     pending: game.pending ? {...game.pending} : null,
     revealed: game.revealed.map((r) => ({ ...r })),
+    claimHistory: (game.claimHistory || []).map(c => ({...c})),
     log: game.log.slice(-64).map((entry) => ({ ...entry })),
     players: game.players.map((p) => ({
       id: p.id,
