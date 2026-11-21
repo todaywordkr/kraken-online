@@ -11,10 +11,10 @@ test('4~8명별 카드 수, 비밀 역할 수, 손패 배분', () => {
     const g = newGame(roster(n));
     assert.equal(g.phase,'intro-dark');
     assert.equal(g.round,1);
-    assert.equal(count(g,'empty'),4*n-1);
+    assert.equal(count(g,'empty'),n*n-n-1);
     assert.equal(count(g,'treasure'),n);
     assert.equal(count(g,'kraken'),1);
-    assert.ok(g.players.every(p=>p.hand.length===5));
+    assert.ok(g.players.every(p=>p.hand.length===n));
     const crew=g.players.filter(p=>p.role==='crew').length;
     const sk=g.players.filter(p=>p.role==='skeleton').length;
     assert.equal(crew+sk,n);
@@ -27,7 +27,7 @@ test('각 사용자는 자신의 역할과 카드 종류별 개수만 받는다'
   const g=newGame(roster(4));
   const v=publicGame(g,'player-1');
   assert.equal(v.mySecret.role,g.players[1].role);
-  assert.equal(Object.values(v.mySecret.counts).reduce((a,b)=>a+b),5);
+  assert.equal(Object.values(v.mySecret.counts).reduce((a,b)=>a+b),4);
   assert.equal(v.players.length,4);
   assert.ok(v.players.every(p=>!('role' in p)));
   assert.ok(v.players.every(p=>p.cards.every(c=>typeof c==='string')));
@@ -53,7 +53,7 @@ test('타인 카드만 열 수 있고 카드 소유자가 다음 행동자가 �
   assert.throws(()=>selectCard(g,target.id,actor,selected.id),/존재하지 않는/);
 });
 
-test('한 라운드에 인원수만큼 공개 시 다시 섞어 인당 4장을 배분한다', () => {
+test('한 라운드에 인원수만큼 공개 시 다시 섞어 인당 (인원수 - 1)장을 배분한다', () => {
   const g=begin(newGame(roster(4)));
   for(let i=0;i<4;i++) {
     const target=g.players.find(p=>p.id!==g.currentId && p.hand.some(c=>c.type==='empty'));
@@ -71,7 +71,7 @@ test('한 라운드에 인원수만큼 공개 시 다시 섞어 인당 4장을 �
   assert.equal(g.round,2);
   assert.equal(g.actionInRound,0);
   assert.equal(g.phase,'reviewing');
-  assert.ok(g.players.every(p=>p.hand.length===4));
+  assert.ok(g.players.every(p=>p.hand.length===3));
   finishReview(g);
   finishDeclarations(g);
   assert.equal(g.phase,'playing');
@@ -129,9 +129,9 @@ test('5초 선언: 개인별 0~최대 보물, 중복 선택 차단, 무응답이
   finishReview(g);
   assert.equal(g.phase,'declaring');
   const first=g.players[0];
-  assert.equal(maxTreasureClaim(g,first.id),5);
-  assert.throws(()=>declareTreasure(g,first.id,6),/0~5/);
-  assert.throws(()=>declareTreasure(g,first.id,0.5),/0~5/);
+  assert.equal(maxTreasureClaim(g,first.id),6);
+  assert.throws(()=>declareTreasure(g,first.id,7),/0~6/);
+  assert.throws(()=>declareTreasure(g,first.id,0.5),/0~6/);
   declareTreasure(g,first.id,0); // Can bluff.
   assert.throws(()=>declareTreasure(g,first.id,2),/이미/);
   const trueCount=g.players[1].hand.filter(c=>c.type==='treasure').length;
@@ -157,6 +157,6 @@ test('다음 라운드에서 공개된 보물을 제외하고 선택 가능 상�
   finishReview(g);
   assert.equal(g.phase,'declaring');
   assert.equal(g.round,2);
-  assert.equal(maxTreasureClaim(g,g.players[0].id),4);
+  assert.equal(maxTreasureClaim(g,g.players[0].id),3);
   assert.ok(g.players.every(p=>p.claim===null));
 });

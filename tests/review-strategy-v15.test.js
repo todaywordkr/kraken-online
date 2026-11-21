@@ -81,5 +81,5 @@ test('크라켄과 보물을 함께 받은 탐험대도 의도적으로 0개라 
   assert.equal(stance.krakenClaim,true);
   assert.match(botSpeak(view,[],'hard',{type:'reply',text:'보물 몇 개?',stance},()=>0.25),/0개/);
   const enemy={round:1,mySecret:{role:'skeleton',counts:{empty:3,treasure:2,kraken:0}}};
-  assert.equal(createBotStance(enemy,'hard',()=>0.1).treasureClaim,0);
+  assert.equal(createBotStance(enemy,'hard',()=>0.1).treasureClaim,1);
 });

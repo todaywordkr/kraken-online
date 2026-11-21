@@ -75,7 +75,7 @@ test('실시간 온라인 플레이: 생성·입장·준비·시작·선택·채
     assert.equal(state.game.playerCount,4);
     assert.equal(state.game.round,1);
     assert.ok(state.game.players.every(p=>!('role' in p)));
-    assert.equal(state.game.mySecret.counts.empty+state.game.mySecret.counts.treasure+state.game.mySecret.counts.kraken,5);
+    assert.equal(state.game.mySecret.counts.empty+state.game.mySecret.counts.treasure+state.game.mySecret.counts.kraken,4);
     const acting=state.game.currentId;
     const actor=sessions.find(s=>s.state.myId===acting);
     const target=state.game.players.find(p=>p.id!==acting);
